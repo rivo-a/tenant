@@ -1,0 +1,6 @@
+{
+    "require": {
+        "mpdf/mpdf": "*",
+        "tecnickcom/tcpdf": "*"
+    }
+}

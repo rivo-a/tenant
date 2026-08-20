@@ -1,0 +1,33 @@
+# ===============================
+# TENANT SYSTEM – PUBLIC LOCK
+# ===============================
+
+# Disable directory listing
+Options -Indexes
+
+# Use modern Apache access control
+Require all granted
+
+# Enable rewrite engine
+RewriteEngine On
+
+# -------------------------------
+# BLOCK SENSITIVE DIRECTORIES
+# -------------------------------
+RewriteRule ^(config|controllers|auth|storage|migrations)/ - [F,L]
+
+# -------------------------------
+# ROUTE ALL REQUESTS TO index.php
+# -------------------------------
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^ index.php [QSA,L]
+
+# -------------------------------
+# SECURITY HEADERS (OPTIONAL)
+# -------------------------------
+<IfModule mod_headers.c>
+    Header set X-Frame-Options "SAMEORIGIN"
+    Header set X-Content-Type-Options "nosniff"
+    Header set X-XSS-Protection "1; mode=block"
+</IfModule>
