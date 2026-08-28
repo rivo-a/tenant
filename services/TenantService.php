@@ -35,9 +35,18 @@ class TenantService
     private function assertRoomOwnership(int $roomId, int $adminId): array
     {
         $stmt = $this->pdo->prepare("
-            SELECT *
-            FROM rooms
-            WHERE id = ? AND admin_id = ?
+            SELECT
+                r.*,
+                COALESCE(NULLIF(r.monthly_rent, 0), rt.default_monthly_rent) AS effective_monthly_rent,
+                EXISTS (
+                    SELECT 1
+                    FROM tenants t
+                    WHERE t.room_id = r.id
+                      AND t.status = 'active'
+                ) AS has_active_tenant
+            FROM rooms r
+            LEFT JOIN room_types rt ON rt.id = r.room_type_id
+            WHERE r.id = ? AND r.admin_id = ?
         ");
         $stmt->execute([$roomId, $adminId]);
 
@@ -77,11 +86,21 @@ class TenantService
     public function getFreeRooms(int $adminId): array
     {
         $stmt = $this->pdo->prepare("
-            SELECT r.id, r.room_number, rt.name AS room_type,
-                   COALESCE(r.monthly_rent, rt.default_monthly_rent) AS rent
+            SELECT
+                r.id,
+                r.room_number,
+                rt.name AS room_type,
+                COALESCE(NULLIF(r.monthly_rent, 0), rt.default_monthly_rent) AS rent
             FROM rooms r
-            JOIN room_types rt ON r.room_type_id = rt.id
-            WHERE r.admin_id = ? AND r.status = 'free'
+            LEFT JOIN room_types rt ON r.room_type_id = rt.id
+            WHERE r.admin_id = ?
+              AND r.status = 'free'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM tenants t
+                  WHERE t.room_id = r.id
+                    AND t.status = 'active'
+              )
             ORDER BY r.room_number
         ");
         $stmt->execute([$adminId]);
@@ -106,17 +125,43 @@ class TenantService
             $roomId      = (int)($data['room_id'] ?? 0);
             $moveInDate  = $data['move_in_date'] ?? date('Y-m-d');
 
+            if ($fullName === '') {
+                throw new Exception("Tenant name is required.");
+            }
+
             if (!$roomId) {
                 throw new Exception("Room ID is required.");
             }
 
+            if ($email !== '' && filter_var($email, FILTER_VALIDATE_EMAIL) === false) {
+                throw new Exception("Invalid tenant email address.");
+            }
+
+            $moveInDateObject = DateTimeImmutable::createFromFormat('!Y-m-d', $moveInDate);
+            $dateErrors = DateTimeImmutable::getLastErrors();
+            $hasDateErrors = $dateErrors !== false && (
+                $dateErrors['warning_count'] > 0 ||
+                $dateErrors['error_count'] > 0
+            );
+
+            if (
+                $moveInDateObject === false ||
+                $hasDateErrors ||
+                $moveInDateObject->format('Y-m-d') !== $moveInDate
+            ) {
+                throw new Exception("Invalid move-in date.");
+            }
+
             $room = $this->assertRoomOwnership($roomId, $adminId);
 
-            if ($room['status'] !== 'free') {
+            if ($room['status'] !== 'free' || (int)($room['has_active_tenant'] ?? 0) === 1) {
                 throw new Exception("Room is not available.");
             }
 
-            // ===== INSERT TENANT WITH admin_id AND rent_due_date =====
+            $monthlyRent = (float)($room['effective_monthly_rent'] ?? 0);
+            $monthlyRentValue = $monthlyRent > 0 ? $monthlyRent : null;
+
+            // ===== INSERT TENANT WITH OWNERSHIP, RENT SNAPSHOT, AND DUE DATE =====
             $stmt = $this->pdo->prepare("
                 INSERT INTO tenants (
                     admin_id,
@@ -126,9 +171,10 @@ class TenantService
                     email,
                     move_in_date,
                     rent_due_date,
+                    monthly_rent,
                     status,
                     created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', CURRENT_TIMESTAMP)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', CURRENT_TIMESTAMP)
             ");
             $stmt->execute([
                 $adminId,
@@ -137,17 +183,32 @@ class TenantService
                 $phone,
                 $email,
                 $moveInDate,
-                $moveInDate // first rent_due_date
+                $moveInDate,
+                $monthlyRentValue
             ]);
 
             $tenantId = (int)$this->pdo->lastInsertId();
 
             // ===== MARK ROOM AS OCCUPIED =====
-            $this->pdo->prepare("
+            $roomUpdate = $this->pdo->prepare("
                 UPDATE rooms
                 SET status = 'occupied'
                 WHERE id = ?
-            ")->execute([$roomId]);
+                  AND admin_id = ?
+                  AND status = 'free'
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM tenants
+                      WHERE room_id = ?
+                        AND status = 'active'
+                        AND id <> ?
+                  )
+            ");
+            $roomUpdate->execute([$roomId, $adminId, $roomId, $tenantId]);
+
+            if ($roomUpdate->rowCount() !== 1) {
+                throw new Exception("Room is no longer available.");
+            }
 
             $this->pdo->commit();
 
@@ -186,6 +247,16 @@ class TenantService
             $moveInDate,
             $tenantId
         ]);
+
+        if (function_exists('logAudit')) {
+            try {
+                logAudit(
+                    $adminId,
+                    'TENANT_UPDATED',
+                    "Tenant #{$tenantId} details updated."
+                );
+            } catch (Throwable $ignored) {}
+        }
     }
 
     /* =====================================================

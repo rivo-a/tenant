@@ -20,15 +20,17 @@ function nav_active(string $key, string $active): string
 function nav_link(string $href, string $label, string $key, string $active): void
 {
     $cls = nav_active($key, $active);
-    echo '<a href="' . e($href) . '" class="px-3 py-2 rounded-xl border text-sm font-semibold transition ' . $cls . '">' . e($label) . '</a>';
+    $current = $key === $active ? ' aria-current="page"' : '';
+
+    echo '<a href="' . e($href) . '" class="min-h-11 inline-flex items-center justify-center rounded-xl border px-3 py-2 text-sm font-semibold transition ' . $cls . '"' . $current . '>' . e($label) . '</a>';
 }
 ?>
 
-<header class="sticky top-0 z-40 bg-white/80 backdrop-blur border-b border-slate-200">
-  <div class="mx-auto max-w-7xl px-4 sm:px-6 py-3 flex items-center justify-between gap-3">
+<header class="sticky top-0 z-40 border-b border-slate-200 bg-white/80 backdrop-blur">
+  <div class="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-3 sm:px-6">
     <!-- Brand -->
     <div class="flex items-center gap-3">
-      <div class="h-10 w-10 rounded-2xl bg-slate-900 text-white grid place-items-center font-black">
+      <div class="grid h-10 w-10 place-items-center rounded-2xl bg-slate-900 font-black text-white">
         TS
       </div>
       <div class="leading-tight">
@@ -44,22 +46,21 @@ function nav_link(string $href, string $label, string $key, string $active): voi
 
     <!-- Mobile toggle -->
     <button
+      id="mobileNavToggle"
       type="button"
-      class="sm:hidden inline-flex items-center justify-center rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
-      onclick="document.getElementById('mobileNav').classList.toggle('hidden')"
+      class="inline-flex min-h-11 items-center justify-center rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 sm:hidden"
+      aria-controls="mobileNav"
+      aria-expanded="false"
     >
       Menu
     </button>
 
     <!-- Desktop nav -->
-    <nav class="hidden sm:flex items-center gap-2 flex-wrap justify-end">
+    <nav class="hidden flex-wrap items-center justify-end gap-2 sm:flex" aria-label="Primary navigation">
       <?php nav_link('payments.php', 'Payments', 'payments', $active); ?>
       <?php nav_link('payments_history.php', 'History', 'history', $active); ?>
       <?php nav_link('dashboard.php', 'Dashboard', 'dashboard', $active); ?>
-
-      <!-- ✅ add this (was in your old <p> links) -->
       <?php nav_link('tenant_payments.php', 'Tenant Payments', 'tenant_payments', $active); ?>
-
       <?php nav_link('tenants.php', 'Tenants', 'tenants', $active); ?>
       <?php nav_link('rooms.php', 'Rooms', 'rooms', $active); ?>
       <?php nav_link('reports.php', 'Reports', 'reports', $active); ?>
@@ -74,19 +75,19 @@ function nav_link(string $href, string $label, string $key, string $active): voi
       <?php endif; ?>
 
       <a href="logout.php"
-         class="ml-2 px-3 py-2 rounded-xl border border-slate-200 bg-white text-sm font-semibold text-slate-700 hover:bg-slate-50">
+         class="ml-2 inline-flex min-h-11 items-center rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">
         Logout
       </a>
     </nav>
   </div>
 
   <!-- Mobile nav -->
-  <div id="mobileNav" class="hidden sm:hidden border-t border-slate-200 bg-white">
-    <div class="mx-auto max-w-7xl px-4 py-3 flex flex-col gap-2">
+  <nav id="mobileNav" class="hidden border-t border-slate-200 bg-white sm:hidden" aria-label="Mobile navigation">
+    <div class="mx-auto flex max-w-7xl flex-col gap-2 px-4 py-3">
       <?php nav_link('payments.php', 'Payments', 'payments', $active); ?>
       <?php nav_link('payments_history.php', 'History', 'history', $active); ?>
+      <?php nav_link('dashboard.php', 'Dashboard', 'dashboard', $active); ?>
       <?php nav_link('tenant_payments.php', 'Tenant Payments', 'tenant_payments', $active); ?>
-
       <?php nav_link('tenants.php', 'Tenants', 'tenants', $active); ?>
       <?php nav_link('rooms.php', 'Rooms', 'rooms', $active); ?>
       <?php nav_link('reports.php', 'Reports', 'reports', $active); ?>
@@ -101,9 +102,11 @@ function nav_link(string $href, string $label, string $key, string $active): voi
       <?php endif; ?>
 
       <a href="logout.php"
-         class="px-3 py-2 rounded-xl border border-slate-200 bg-white text-sm font-semibold text-slate-700 hover:bg-slate-50">
+         class="inline-flex min-h-11 items-center rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">
         Logout
       </a>
     </div>
-  </div>
+  </nav>
 </header>
+
+<script src="assets/js/tenant-control.js" defer></script>

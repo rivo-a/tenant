@@ -26,7 +26,13 @@ if (isset($_POST['create_admin'])) {
             ");
             $stmt->execute([$name, $username, $hash]);
 
-            logAudit($pdo, $_SESSION['admin_id'], 'ADMIN_CREATED', "Caretaker {$username} created");
+            try {
+                logAudit(
+                    (int)$_SESSION['admin_id'],
+                    'ADMIN_CREATED',
+                    "Caretaker {$username} created"
+                );
+            } catch (Throwable $ignored) {}
             $success = "Caretaker created successfully.";
         } catch (PDOException $e) {
             $error = "Username already exists.";
@@ -47,7 +53,13 @@ if (isset($_POST['update_role'])) {
         $stmt = $pdo->prepare("UPDATE admins SET role = ? WHERE id = ?");
         $stmt->execute([$role, $id]);
 
-        logAudit($pdo, $_SESSION['admin_id'], 'ROLE_CHANGED', "Admin {$id} set to {$role}");
+        try {
+            logAudit(
+                (int)$_SESSION['admin_id'],
+                'ROLE_CHANGED',
+                "Admin {$id} set to {$role}"
+            );
+        } catch (Throwable $ignored) {}
         $success = "Role updated.";
     }
 }
@@ -66,7 +78,13 @@ if (isset($_POST['toggle_status'])) {
         ");
         $stmt->execute([$id]);
 
-        logAudit($pdo, $_SESSION['admin_id'], 'STATUS_CHANGED', "Admin {$id} status toggled");
+        try {
+            logAudit(
+                (int)$_SESSION['admin_id'],
+                'STATUS_CHANGED',
+                "Admin {$id} status toggled"
+            );
+        } catch (Throwable $ignored) {}
         $success = "Status updated.";
     }
 }

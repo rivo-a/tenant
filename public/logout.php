@@ -1,14 +1,13 @@
 <?php
-// logout.php
-session_start();
+declare(strict_types=1);
 
-// Clear all session data
-$_SESSION = [];
+require_once __DIR__ . '/../core/bootstrap.php';
 
-// Destroy the session
-session_destroy();
+$adminId = current_admin_id();
+if ($adminId > 0 && function_exists('logAudit')) {
+    try {
+        logAudit($adminId, 'LOGOUT', 'Admin logged out.');
+    } catch (Throwable $ignored) {}
+}
 
-// Redirect to login page
-header("Location: login.php");
-exit;
-?>
+logout();
