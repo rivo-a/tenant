@@ -109,6 +109,10 @@ $outstandingRows = $outstanding->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
 /* ================= EXPORT CSV ================= */
 if (isset($_GET['export']) && $_GET['export'] === 'csv') {
+    try {
+        logAudit($admin_id, 'REPORT_EXPORTED', "CSV payments report exported for {$year}.");
+    } catch (Throwable $ignored) {}
+
     header('Content-Type: text/csv');
     header('Content-Disposition: attachment; filename=payments_'.$year.'.csv');
     $out = fopen('php://output', 'w');
@@ -129,6 +133,10 @@ if (isset($_GET['export']) && $_GET['export'] === 'csv') {
 
 /* ================= EXPORT PDF ================= */
 if (isset($_GET['export']) && $_GET['export'] === 'pdf') {
+    try {
+        logAudit($admin_id, 'REPORT_EXPORTED', "PDF payments report exported for {$year}.");
+    } catch (Throwable $ignored) {}
+
     require_once __DIR__ . '/../vendor/tecnickcom/tcpdf/tcpdf.php';
 
     $pdf = new TCPDF();

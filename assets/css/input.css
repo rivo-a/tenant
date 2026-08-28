@@ -1,83 +1,50 @@
-<<<<<<< HEAD
 @import "tailwindcss";
 
-/* ✅ Tell Tailwind v4 where to scan for class names */
+/* Scan all server-rendered templates and the small vanilla-JS layer. */
 @source "../public/**/*.php";
 @source "../views/**/*.php";
 @source "../controllers/**/*.php";
 @source "../core/**/*.php";
 @source "../services/**/*.php";
-
-/* ✅ Optional: scan JS if you have any UI scripts */
 @source "../public/**/*.js";
 
-/* ---- Your custom components ---- */
-.btn {
-  @apply inline-flex items-center gap-2 rounded-xl px-4 py-2 font-semibold;
-}
-
-.btn-primary {
-  @apply bg-slate-900 text-white hover:bg-slate-800;
-}
-
-.card {
-  @apply rounded-2xl border border-slate-200 bg-white shadow-sm;
-}
-
-
-:root {
+/* Shared typography tokens used by the dashboard surfaces. */
+@theme {
   --font-sans: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-alt: "IBM Plex Sans", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
-/* Default body font */
-body {
-  font-family: var(--font-sans);
+@layer base {
+  body {
+    font-family: var(--font-sans);
+  }
 }
 
-/* Optional utility class */
-.font-alt {
-  font-family: var(--font-alt);
+/* Keep the legacy helpers used by older PHP pages, without duplicate branches. */
+@layer components {
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(var(--spacing) * 2);
+    border-radius: var(--radius-xl);
+    padding-inline: calc(var(--spacing) * 4);
+    padding-block: calc(var(--spacing) * 2);
+    font-weight: var(--font-weight-semibold);
+  }
+
+  .btn-primary {
+    background-color: var(--color-slate-900);
+    color: var(--color-white);
+  }
+
+  .btn-primary:hover {
+    background-color: var(--color-slate-800);
+  }
+
+  .card {
+    border: 1px solid var(--color-slate-200);
+    border-radius: var(--radius-2xl);
+    background-color: var(--color-white);
+    box-shadow: var(--shadow-sm);
+  }
 }
-=======
-@import "tailwindcss";
-
-/* ✅ Tell Tailwind v4 where to scan for class names */
-@source "../public/**/*.php";
-@source "../views/**/*.php";
-@source "../controllers/**/*.php";
-@source "../core/**/*.php";
-@source "../services/**/*.php";
-
-/* ✅ Optional: scan JS if you have any UI scripts */
-@source "../public/**/*.js";
-
-/* ---- Your custom components ---- */
-.btn {
-  @apply inline-flex items-center gap-2 rounded-xl px-4 py-2 font-semibold;
-}
-
-.btn-primary {
-  @apply bg-slate-900 text-white hover:bg-slate-800;
-}
-
-.card {
-  @apply rounded-2xl border border-slate-200 bg-white shadow-sm;
-}
-
-
-:root {
-  --font-sans: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --font-alt: "IBM Plex Sans", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-}
-
-/* Default body font */
-body {
-  font-family: var(--font-sans);
-}
-
-/* Optional utility class */
-.font-alt {
-  font-family: var(--font-alt);
-}
->>>>>>> 615fcdcf68f2d90d681eb306ca365f186b55b9d4

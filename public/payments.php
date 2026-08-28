@@ -97,7 +97,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['receive_payment'])) {
         }
 
         if (function_exists('logAudit')) {
-            try { logAudit($pdo, $admin_id, 'PAYMENT_RECEIVED', "Tenant #{$tenant_id} paid {$amount} on {$date} ({$month})."); } catch (Throwable $ignored) {}
+            try {
+                logAudit(
+                    $admin_id,
+                    'PAYMENT_RECEIVED',
+                    "Tenant #{$tenant_id} paid {$amount} on {$date} ({$month})."
+                );
+            } catch (Throwable $ignored) {}
         }
 
     } catch (Throwable $e) {

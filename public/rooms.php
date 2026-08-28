@@ -84,6 +84,15 @@ if (isset($_POST['add_room_type'])) {
                  VALUES (?, ?, 1)"
             );
             $stmt->execute([$name, $rent]);
+
+            try {
+                logAudit(
+                    $admin_id,
+                    'ROOM_TYPE_CREATED',
+                    "Room type '{$name}' created with default monthly rent {$rent}."
+                );
+            } catch (Throwable $ignored) {}
+
             $_SESSION['success'] = "Room type '{$name}' added successfully.";
         } catch (PDOException $e) {
             $_SESSION['error'] = "Room type already exists.";
@@ -128,6 +137,16 @@ if (isset($_POST['add_rooms'])) {
         if ($duplicates) {
             $_SESSION['error'] = "Already exist: " . implode(', ', $duplicates);
         }
+
+        if ($added) {
+            try {
+                logAudit(
+                    $admin_id,
+                    'ROOMS_CREATED',
+                    'Rooms created: ' . implode(', ', $added)
+                );
+            } catch (Throwable $ignored) {}
+        }
     } else {
         $_SESSION['error'] = "Room numbers and room type are required.";
     }
@@ -148,6 +167,14 @@ if (isset($_POST['edit_room_id'])) {
          WHERE id = ? AND admin_id = ?"
     );
     $stmt->execute([$new_rent, $room_id, $admin_id]);
+
+    try {
+        logAudit(
+            $admin_id,
+            'ROOM_RENT_UPDATED',
+            "Room #{$room_id} rent override set to " . ($new_rent === null ? 'template default' : (string)$new_rent) . "."
+        );
+    } catch (Throwable $ignored) {}
 
     $_SESSION['success'] = "Room rent updated successfully.";
     redirect('rooms.php');
@@ -188,12 +215,13 @@ if (isset($_POST['bulk_update_rent'])) {
             $affected = (int)$stmt->fetchColumn();
 
             if (function_exists('logAudit')) {
-                logAudit(
-                    $pdo,
-                    $admin_id,
-                    'BULK_RENT_UPDATE',
-                    "Room type '{$type['name']}' rent changed from {$type['default_monthly_rent']} to {$newRent}. Affected rooms: {$affected}"
-                );
+                try {
+                    logAudit(
+                        $admin_id,
+                        'BULK_RENT_UPDATE',
+                        "Room type '{$type['name']}' rent changed from {$type['default_monthly_rent']} to {$newRent}. Affected rooms: {$affected}"
+                    );
+                } catch (Throwable $ignored) {}
             }
 
             $pdo->commit();
