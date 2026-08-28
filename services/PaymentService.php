@@ -1,4 +1,6 @@
 <?php
+declare(strict_types=1);
+
 class PaymentService
 {
     private PDO $pdo;
@@ -36,6 +38,7 @@ class PaymentService
 
         try {
             /* ===== FETCH TENANT + RENT + DUE DATE ===== */
+            // Using EXACT column names from your original pasted file
             $stmt = $this->pdo->prepare("
                 SELECT 
                     t.id,
@@ -51,7 +54,7 @@ class PaymentService
             $tenant = $stmt->fetch(PDO::FETCH_ASSOC);
 
             if (!$tenant) {
-                throw new RuntimeException("Invalid tenant.");
+                throw new RuntimeException("Invalid tenant or tenant has exited.");
             }
 
             $rent = (float) $tenant['rent'];
@@ -105,7 +108,6 @@ class PaymentService
 
                 // month completed → advance due date
                 if ($pay == $due) {
-                    // next due date same day as current
                     $day = (int) date('d', strtotime($tenant['rent_due_date'] ?? $paymentDate));
                     $startDate->modify('+1 month');
                     $nextDue = $startDate->format("Y-m-$day");
