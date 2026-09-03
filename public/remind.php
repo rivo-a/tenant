@@ -2,211 +2,217 @@
 
 declare(strict_types=1);
 
-session_start();
+/**
+ * =========================================================
+ * TENANT RENT SMS REMINDER
+ * =========================================================
+ *
+ * File:
+ *     public/remind.php
+ *
+ * SMS Provider:
+ *     SMS.UG
+ *
+ * Flow:
+ *     Tenants
+ *        ↓
+ *     Remind Tenant
+ *        ↓
+ *     Load tenant + room + rent
+ *        ↓
+ *     Calculate outstanding balance
+ *        ↓
+ *     Manager reviews / edits SMS
+ *        ↓
+ *     Re-check balance
+ *        ↓
+ *     Create SMS log as PENDING
+ *        ↓
+ *     Send through SMS.UG
+ *        ↓
+ *     SENT / FAILED
+ *
+ * =========================================================
+ */
 
-/*
-|--------------------------------------------------------------------------
-| Yoola SMS Test Page
-|--------------------------------------------------------------------------
-| File: public/remind.php
-|
-| This page is ONLY for testing the Yoola SMS integration.
-| Once confirmed working, we will connect it to tenants/rent.
-|--------------------------------------------------------------------------
-*/
+require_once dirname(__DIR__) . '/vendor/autoload.php';
+require_once dirname(__DIR__) . '/core/bootstrap.php';
 
+use Dotenv\Dotenv;
 
-/*
-|--------------------------------------------------------------------------
-| 1. DEFINE PROJECT ROOT
-|--------------------------------------------------------------------------
-|
-| remind.php is inside:
-|
-| tenant-system/public/remind.php
-|
-| dirname(__DIR__) takes us one level up to:
-|
-| tenant-system/
-|--------------------------------------------------------------------------
-*/
+/* =========================================================
+   1. PROJECT / ENVIRONMENT
+   ========================================================= */
 
 $projectRoot = dirname(__DIR__);
 
-
-/*
-|--------------------------------------------------------------------------
-| 2. LOAD COMPOSER
-|--------------------------------------------------------------------------
-*/
-
-$autoload = $projectRoot . '/vendor/autoload.php';
-
-if (!file_exists($autoload)) {
-    die(
-        'Composer autoloader was not found.<br><br>' .
-        'Expected location:<br>' .
-        '<strong>' . htmlspecialchars($autoload) . '</strong><br><br>' .
-        'Make sure the vendor folder exists in your project root.'
-    );
-}
-
-require_once $autoload;
-
-
-/*
-|--------------------------------------------------------------------------
-| 3. LOAD .ENV
-|--------------------------------------------------------------------------
-|
-| The .env file should be here:
-|
-| tenant-system/.env
-|
-| NOT:
-|
-| tenant-system/public/.env
-|--------------------------------------------------------------------------
-*/
-
 try {
 
-    $dotenv = Dotenv\Dotenv::createImmutable($projectRoot);
-    $dotenv->load();
+    $dotenv = Dotenv::createImmutable($projectRoot);
+    $dotenv->safeLoad();
 
 } catch (Throwable $e) {
 
-    die(
-        '<strong>Could not load .env</strong><br><br>' .
-        'Make sure you have a file called <strong>.env</strong> ' .
-        'in the project root:<br><br>' .
-        '<strong>' .
-        htmlspecialchars($projectRoot . '/.env') .
-        '</strong>'
+    // Never expose .env/configuration errors to the browser.
+    error_log(
+        'Dotenv loading failed: ' . $e->getMessage()
     );
 }
 
+/* =========================================================
+   2. SMS.UG CONFIGURATION
+   ========================================================= */
 
-/*
-|--------------------------------------------------------------------------
-| 4. GET YOOLA API KEY
-|--------------------------------------------------------------------------
-*/
+$smsApiKey = trim(
+    (string)($_ENV['SMS_UG_API_KEY'] ?? '')
+);
 
-$yoolaApiKey = $_ENV['YOOLA_API_KEY'] ?? '';
+/**
+ * SMS.UG documentation:
+ *
+ * POST https://sms.ug/api/
+ */
+$smsApiUrl = 'https://sms.ug/api/';
 
-if ($yoolaApiKey === '') {
+/**
+ * Internal title shown in SMS.UG Sent Messages.
+ *
+ * SMS.UG does not allow symbols such as:
+ *
+ * ^ GBP $ % & * ( ) { } @ #
+ * ~ ? < > | = _ +
+ *
+ * Keep this simple.
+ */
+$smsTitle = 'Rent Reminder';
 
-    die(
-        '<strong>Yoola API key is missing.</strong><br><br>' .
-        'Add the following to your .env file:<br><br>' .
-        '<code>YOOLA_API_KEY=YOUR_NEW_API_KEY</code>'
-    );
+/* =========================================================
+   3. AUTHENTICATION
+   ========================================================= */
+
+require_login();
+
+$adminId = (int)(
+    $_SESSION['admin_id'] ?? 0
+);
+
+if ($adminId <= 0) {
+
+    http_response_code(403);
+
+    exit('Unauthorized.');
 }
 
+/* =========================================================
+   4. DATABASE
+   ========================================================= */
 
-$yoolaApiUrl = 'https://yoolasms.com/api/v1/send';
+$db = $pdo ?? null;
 
+if (!$db instanceof PDO) {
 
-/*
-|--------------------------------------------------------------------------
-| 4. CREATE CSRF TOKEN
-|--------------------------------------------------------------------------
-*/
+    http_response_code(500);
 
-if (empty($_SESSION['csrf_token'])) {
-
-    $_SESSION['csrf_token'] =
-        bin2hex(random_bytes(32));
+    exit('Database connection is not available.');
 }
 
-$csrfToken = $_SESSION['csrf_token'];
+/* =========================================================
+   5. HELPER FUNCTIONS
+   ========================================================= */
 
-
-/*
-|--------------------------------------------------------------------------
-| 5. DEFAULT VALUES
-|--------------------------------------------------------------------------
-*/
-
-$phone = '0744063716';
-
-$message =
-    'Hello from our Rental Management System. ' .
-    'This is a test SMS.';
-
-$result = null;
-
-$error = null;
-
-$success = null;
-
-$httpCode = null;
-
-
-/*
-|--------------------------------------------------------------------------
-| 6. HTML ESCAPE FUNCTION
-|--------------------------------------------------------------------------
-*/
-
-function e(string $value): string
+function e(?string $value): string
 {
     return htmlspecialchars(
-        $value,
+        $value ?? '',
         ENT_QUOTES,
         'UTF-8'
     );
 }
 
-
-/*
-|--------------------------------------------------------------------------
-| 7. PHONE NUMBER NORMALIZATION
-|--------------------------------------------------------------------------
-*/
-
-function normalizeUgandaPhone(string $phone): string
+/**
+ * Format money as UGX.
+ */
+function money(float $amount): string
 {
-    /*
-    |--------------------------------------------------------------------------
-    | Remove spaces, hyphens and brackets
-    |--------------------------------------------------------------------------
-    */
+    return 'UGX ' . number_format(
+        max(0, $amount),
+        0,
+        '.',
+        ','
+    );
+}
 
+/**
+ * Normalize a Ugandan mobile number.
+ *
+ * SMS.UG accepts:
+ *
+ * 2567XXXXXXXX
+ * 07XXXXXXXX
+ * 7XXXXXXXX
+ * +2567XXXXXXXX
+ * +07XXXXXXXX
+ *
+ * Internally we store/send:
+ *
+ * 2567XXXXXXXX
+ *
+ * Example:
+ *
+ * 0704487563
+ *      ↓
+ * 256704487563
+ */
+function normalizeUgandaPhone(
+    string $phone
+): ?string {
+
+    $phone = trim($phone);
+
+    /**
+     * Remove spaces, hyphens, brackets and dots.
+     */
     $phone = preg_replace(
-        '/[\s\-\(\)]+/',
+        '/[\s\-\(\)\.]+/',
         '',
         $phone
-    );
+    ) ?? '';
 
-    if ($phone === null) {
-        return '';
+    if ($phone === '') {
+        return null;
     }
 
+    /**
+     * +2567XXXXXXXX
+     */
+    if (
+        preg_match(
+            '/^\+256(7\d{8})$/',
+            $phone,
+            $matches
+        )
+    ) {
 
-    /*
-    |--------------------------------------------------------------------------
-    | +256704487563
-    | becomes
-    | 256704487563
-    |--------------------------------------------------------------------------
-    */
-
-    if (str_starts_with($phone, '+')) {
-
-        $phone = substr($phone, 1);
+        return '256' . $matches[1];
     }
 
+    /**
+     * 2567XXXXXXXX
+     */
+    if (
+        preg_match(
+            '/^256(7\d{8})$/',
+            $phone,
+            $matches
+        )
+    ) {
 
-    /*
-    |--------------------------------------------------------------------------
-    | 0704487563
-    | becomes
-    | 256704487563
-    |--------------------------------------------------------------------------
-    */
+        return '256' . $matches[1];
+    }
 
+    /**
+     * 07XXXXXXXX
+     */
     if (
         preg_match(
             '/^0(7\d{8})$/',
@@ -215,393 +221,1010 @@ function normalizeUgandaPhone(string $phone): string
         )
     ) {
 
-        $phone =
-            '256' .
-            $matches[1];
+        return '256' . $matches[1];
     }
 
-
-    return $phone;
-}
-
-
-/*
-|--------------------------------------------------------------------------
-| 8. HANDLE FORM SUBMISSION
-|--------------------------------------------------------------------------
-*/
-
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | CSRF CHECK
-    |--------------------------------------------------------------------------
-    */
-
-    $submittedToken =
-        $_POST['csrf_token'] ?? '';
-
+    /**
+     * 7XXXXXXXX
+     */
     if (
-        !is_string($submittedToken) ||
-        !hash_equals(
-            $csrfToken,
-            $submittedToken
+        preg_match(
+            '/^(7\d{8})$/',
+            $phone,
+            $matches
         )
     ) {
 
-        $error =
-            'Security validation failed. ' .
-            'Please refresh the page and try again.';
+        return '256' . $matches[1];
     }
 
+    return null;
+}
 
-    /*
-    |--------------------------------------------------------------------------
-    | API KEY CHECK
-    |--------------------------------------------------------------------------
-    */
+/**
+ * Calculate days overdue.
+ */
+function calculateDaysOverdue(
+    ?string $rentDueDate
+): int {
 
-    elseif ($yoolaApiKey === '') {
-
-        $error =
-            'Yoola API key is not configured. ' .
-            'Make sure YOOLA_API_KEY exists in your .env file.';
+    if (!$rentDueDate) {
+        return 0;
     }
 
+    try {
 
-    /*
-    |--------------------------------------------------------------------------
-    | READ FORM DATA
-    |--------------------------------------------------------------------------
-    */
+        $due = new DateTime($rentDueDate);
+        $today = new DateTime('today');
 
-    else {
+        if ($today <= $due) {
+            return 0;
+        }
 
-        $phone =
-            trim(
-                (string) (
-                    $_POST['phone'] ?? ''
+        return (int)$due->diff($today)->days;
+
+    } catch (Throwable $e) {
+
+        return 0;
+    }
+}
+
+/* =========================================================
+   6. TENANT ID
+   ========================================================= */
+
+$tenantId = filter_input(
+    INPUT_GET,
+    'tenant_id',
+    FILTER_VALIDATE_INT
+);
+
+if (!$tenantId) {
+
+    $tenantId = filter_input(
+        INPUT_POST,
+        'tenant_id',
+        FILTER_VALIDATE_INT
+    );
+}
+
+$tenantId = (int)$tenantId;
+
+if ($tenantId <= 0) {
+
+    http_response_code(400);
+
+    exit('Invalid tenant ID.');
+}
+
+/* =========================================================
+   7. LOAD TENANT
+   ========================================================= */
+
+$tenantStmt = $db->prepare(
+    "
+    SELECT
+        t.id AS tenant_id,
+        t.full_name,
+        t.phone,
+        t.email,
+        t.status AS tenant_status,
+        t.move_in_date,
+        t.rent_due_date,
+        t.monthly_rent AS tenant_rent_override,
+
+        r.id AS room_id,
+        r.room_number,
+        r.monthly_rent AS room_rent_override,
+
+        rt.name AS room_type,
+        rt.default_monthly_rent,
+
+        COALESCE(
+            r.monthly_rent,
+            rt.default_monthly_rent,
+            t.monthly_rent,
+            0
+        ) AS effective_rent
+
+    FROM tenants t
+
+    LEFT JOIN rooms r
+        ON r.id = t.room_id
+
+    LEFT JOIN room_types rt
+        ON rt.id = r.room_type_id
+
+    WHERE
+        t.id = :tenant_id
+        AND t.admin_id = :admin_id
+        AND t.exit_date IS NULL
+
+    LIMIT 1
+    "
+);
+
+$tenantStmt->execute([
+    ':tenant_id' => $tenantId,
+    ':admin_id' => $adminId,
+]);
+
+$tenant = $tenantStmt->fetch(
+    PDO::FETCH_ASSOC
+);
+
+if (!$tenant) {
+
+    http_response_code(404);
+
+    exit(
+        'Tenant not found or you do not have permission to access this tenant.'
+    );
+}
+
+/* =========================================================
+   8. TENANT INFORMATION
+   ========================================================= */
+
+$tenantName = trim(
+    (string)($tenant['full_name'] ?? '')
+);
+
+$tenantPhone = trim(
+    (string)($tenant['phone'] ?? '')
+);
+
+$roomNumber = trim(
+    (string)($tenant['room_number'] ?? '')
+);
+
+$roomType = trim(
+    (string)($tenant['room_type'] ?? '')
+);
+
+$effectiveRent = (float)(
+    $tenant['effective_rent'] ?? 0
+);
+
+$paymentMonth = date('Y-m');
+
+/* =========================================================
+   9. CURRENT MONTH RENT DUE
+   ========================================================= */
+
+$scheduleStmt = $db->prepare(
+    "
+    SELECT
+        COALESCE(SUM(amount_due), 0)
+    FROM rent_schedule
+    WHERE
+        tenant_id = :tenant_id
+        AND month = :payment_month
+    "
+);
+
+$scheduleStmt->execute([
+    ':tenant_id' => $tenantId,
+    ':payment_month' => $paymentMonth,
+]);
+
+$scheduledDue = (float)(
+    $scheduleStmt->fetchColumn()
+);
+
+/**
+ * If no schedule exists, use the tenant's
+ * effective monthly rent.
+ */
+$amountDue = $scheduledDue > 0
+    ? $scheduledDue
+    : $effectiveRent;
+
+/* =========================================================
+   10. CURRENT MONTH PAYMENTS
+   ========================================================= */
+
+$paymentStmt = $db->prepare(
+    "
+    SELECT
+        COALESCE(SUM(amount), 0)
+    FROM payments
+    WHERE
+        tenant_id = :tenant_id
+        AND payment_month = :payment_month
+        AND admin_id = :admin_id
+    "
+);
+
+$paymentStmt->execute([
+    ':tenant_id' => $tenantId,
+    ':payment_month' => $paymentMonth,
+    ':admin_id' => $adminId,
+]);
+
+$amountPaid = (float)(
+    $paymentStmt->fetchColumn()
+);
+
+/**
+ * Never display a negative balance.
+ */
+$outstandingBalance = max(
+    0,
+    $amountDue - $amountPaid
+);
+
+/* =========================================================
+   11. PAYMENT STATUS
+   ========================================================= */
+
+$todayDay = (int)date('j');
+
+if ($outstandingBalance <= 0) {
+
+    $paymentStatus = 'Paid';
+
+} elseif ($todayDay > 5) {
+
+    $paymentStatus = 'Overdue';
+
+} else {
+
+    $paymentStatus = 'Due';
+}
+
+$daysOverdue = calculateDaysOverdue(
+    $tenant['rent_due_date'] ?? null
+);
+
+/* =========================================================
+   12. DEFAULT SMS MESSAGE
+   ========================================================= */
+
+$defaultMessage = sprintf(
+    'Hello %s, this is a reminder that your rent for Room %s is overdue. Your outstanding balance is %s. Please make payment as soon as possible. Thank you.',
+    $tenantName !== ''
+        ? $tenantName
+        : 'Tenant',
+
+    $roomNumber !== ''
+        ? $roomNumber
+        : 'your room',
+
+    money($outstandingBalance)
+);
+
+/**
+ * SMS.UG maximum is 480 characters.
+ */
+$defaultMessage = mb_substr(
+    $defaultMessage,
+    0,
+    480
+);
+
+/* =========================================================
+   13. FORM STATE
+   ========================================================= */
+
+$message = $defaultMessage;
+
+$phoneForForm = $tenantPhone;
+
+$successMessage = '';
+$errorMessage = '';
+
+$providerResponse = null;
+
+/* =========================================================
+   14. CSRF TOKEN
+   ========================================================= */
+
+if (
+    empty($_SESSION['csrf_token']) ||
+    !is_string($_SESSION['csrf_token'])
+) {
+
+    $_SESSION['csrf_token'] =
+        bin2hex(random_bytes(32));
+}
+
+$csrfToken = $_SESSION['csrf_token'];
+
+/* =========================================================
+   15. POST — SEND SMS
+   ========================================================= */
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+
+    /* -----------------------------------------------------
+       CSRF
+       ----------------------------------------------------- */
+
+    $submittedCsrf = (string)(
+        $_POST['csrf_token'] ?? ''
+    );
+
+    if (
+        !hash_equals(
+            (string)$_SESSION['csrf_token'],
+            $submittedCsrf
+        )
+    ) {
+
+        $errorMessage =
+            'Security validation failed. Please refresh the page and try again.';
+    }
+
+    /* -----------------------------------------------------
+       FORM VALUES
+       ----------------------------------------------------- */
+
+    $phoneForForm = trim(
+        (string)(
+            $_POST['phone']
+            ?? $tenantPhone
+        )
+    );
+
+    $message = trim(
+        (string)(
+            $_POST['message']
+            ?? $defaultMessage
+        )
+    );
+
+    /* -----------------------------------------------------
+       API KEY
+       ----------------------------------------------------- */
+
+    if (
+        $errorMessage === '' &&
+        $smsApiKey === ''
+    ) {
+
+        $errorMessage =
+            'SMS could not be sent because SMS.UG API access is not configured. Check SMS_UG_API_KEY in your .env file.';
+    }
+
+    /* -----------------------------------------------------
+       PHONE VALIDATION
+       ----------------------------------------------------- */
+
+    $normalizedPhone =
+        normalizeUgandaPhone(
+            $phoneForForm
+        );
+
+    if (
+        $errorMessage === '' &&
+        $normalizedPhone === null
+    ) {
+
+        $errorMessage =
+            'Please enter a valid Ugandan mobile number, for example 0704487563.';
+    }
+
+    /* -----------------------------------------------------
+       MESSAGE VALIDATION
+       ----------------------------------------------------- */
+
+    if (
+        $errorMessage === '' &&
+        $message === ''
+    ) {
+
+        $errorMessage =
+            'SMS message cannot be empty.';
+    }
+
+    if (
+        $errorMessage === '' &&
+        mb_strlen($message) > 480
+    ) {
+
+        $errorMessage =
+            'SMS message is too long. SMS.UG allows a maximum of 480 characters.';
+    }
+
+    /* -----------------------------------------------------
+       RECHECK TENANT OWNERSHIP
+       ----------------------------------------------------- */
+
+    if ($errorMessage === '') {
+
+        $ownershipStmt = $db->prepare(
+            "
+            SELECT id
+            FROM tenants
+            WHERE
+                id = :tenant_id
+                AND admin_id = :admin_id
+                AND exit_date IS NULL
+            LIMIT 1
+            "
+        );
+
+        $ownershipStmt->execute([
+            ':tenant_id' => $tenantId,
+            ':admin_id' => $adminId,
+        ]);
+
+        if (!$ownershipStmt->fetchColumn()) {
+
+            $errorMessage =
+                'You are not authorized to send a reminder to this tenant.';
+        }
+    }
+
+    /* -----------------------------------------------------
+       RECHECK CURRENT BALANCE
+       ----------------------------------------------------- */
+
+    if ($errorMessage === '') {
+
+        /**
+         * Recalculate immediately before sending.
+         *
+         * This protects against:
+         *
+         * Manager opens reminder page
+         *        ↓
+         * Tenant pays
+         *        ↓
+         * Manager clicks Send
+         *
+         * We don't want to send an outdated reminder.
+         */
+
+        $verifyScheduleStmt = $db->prepare(
+            "
+            SELECT
+                COALESCE(SUM(amount_due), 0)
+            FROM rent_schedule
+            WHERE
+                tenant_id = :tenant_id
+                AND month = :payment_month
+            "
+        );
+
+        $verifyScheduleStmt->execute([
+            ':tenant_id' => $tenantId,
+            ':payment_month' => $paymentMonth,
+        ]);
+
+        $verifiedScheduledDue =
+            (float)$verifyScheduleStmt->fetchColumn();
+
+        if ($verifiedScheduledDue <= 0) {
+
+            $verifiedScheduledDue =
+                $effectiveRent;
+        }
+
+        $verifyPaymentStmt = $db->prepare(
+            "
+            SELECT
+                COALESCE(SUM(amount), 0)
+            FROM payments
+            WHERE
+                tenant_id = :tenant_id
+                AND payment_month = :payment_month
+                AND admin_id = :admin_id
+            "
+        );
+
+        $verifyPaymentStmt->execute([
+            ':tenant_id' => $tenantId,
+            ':payment_month' => $paymentMonth,
+            ':admin_id' => $adminId,
+        ]);
+
+        $verifiedAmountPaid =
+            (float)$verifyPaymentStmt->fetchColumn();
+
+        $verifiedBalance = max(
+            0,
+            $verifiedScheduledDue -
+            $verifiedAmountPaid
+        );
+
+        $amountDue =
+            $verifiedScheduledDue;
+
+        $amountPaid =
+            $verifiedAmountPaid;
+
+        $outstandingBalance =
+            $verifiedBalance;
+
+        /**
+         * Stop sending if tenant is now fully paid.
+         */
+        if ($verifiedBalance <= 0) {
+
+            $errorMessage =
+                'This tenant has already paid the current month\'s rent. The SMS was not sent.';
+        }
+    }
+
+    /* -----------------------------------------------------
+       CREATE PENDING SMS LOG
+       ----------------------------------------------------- */
+
+    $smsLogId = null;
+
+    if ($errorMessage === '') {
+
+        try {
+
+            $insertSmsLog = $db->prepare(
+                "
+                INSERT INTO sms_logs (
+                    tenant_id,
+                    admin_id,
+                    phone,
+                    message,
+                    sms_type,
+                    amount_due,
+                    amount_paid,
+                    outstanding_balance,
+                    provider,
+                    status,
+                    created_at,
+                    updated_at
                 )
+                VALUES (
+                    :tenant_id,
+                    :admin_id,
+                    :phone,
+                    :message,
+                    :sms_type,
+                    :amount_due,
+                    :amount_paid,
+                    :outstanding_balance,
+                    :provider,
+                    'PENDING',
+                    CURRENT_TIMESTAMP,
+                    CURRENT_TIMESTAMP
+                )
+                "
             );
 
-        $message =
-            trim(
-                (string) (
-                    $_POST['message'] ?? ''
-                )
+            $insertSmsLog->execute([
+                ':tenant_id' =>
+                    $tenantId,
+
+                ':admin_id' =>
+                    $adminId,
+
+                ':phone' =>
+                    $normalizedPhone,
+
+                ':message' =>
+                    $message,
+
+                ':sms_type' =>
+                    'RENT_REMINDER',
+
+                ':amount_due' =>
+                    $amountDue,
+
+                ':amount_paid' =>
+                    $amountPaid,
+
+                ':outstanding_balance' =>
+                    $outstandingBalance,
+
+                ':provider' =>
+                    'sms.ug',
+            ]);
+
+            $smsLogId =
+                (int)$db->lastInsertId();
+
+        } catch (Throwable $e) {
+
+            error_log(
+                'SMS log creation failed: ' .
+                $e->getMessage()
             );
 
+            $errorMessage =
+                'The SMS could not be prepared for sending. Please try again.';
+        }
+    }
 
-        /*
-        |--------------------------------------------------------------------------
-        | PHONE VALIDATION
-        |--------------------------------------------------------------------------
-        */
+    /* -----------------------------------------------------
+       SEND SMS.UG REQUEST
+       ----------------------------------------------------- */
 
-        if ($phone === '') {
+    if (
+        $errorMessage === '' &&
+        $smsLogId !== null
+    ) {
 
-            $error =
-                'Please enter a phone number.';
+        $payload = [
+            'title' => $smsTitle,
+            'message' => $message,
+            'contacts' => [
+                $normalizedPhone
+            ],
+        ];
 
-        } else {
+        $jsonPayload = json_encode(
+            $payload,
+            JSON_UNESCAPED_UNICODE |
+            JSON_UNESCAPED_SLASHES
+        );
 
-            $phone =
-                normalizeUgandaPhone(
-                    $phone
+        if ($jsonPayload === false) {
+
+            $errorMessage =
+                'The SMS request could not be prepared.';
+
+            try {
+
+                $updateLog = $db->prepare(
+                    "
+                    UPDATE sms_logs
+                    SET
+                        status = 'FAILED',
+                        failure_reason = :reason,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = :id
+                    "
                 );
 
+                $updateLog->execute([
+                    ':reason' =>
+                        'JSON encoding failed',
 
-            /*
-            |--------------------------------------------------------------------------
-            | Uganda mobile format
-            |--------------------------------------------------------------------------
-            |
-            | 2567XXXXXXXX
-            |
-            */
+                    ':id' =>
+                        $smsLogId,
+                ]);
 
-            if (
-                !preg_match(
-                    '/^2567\d{8}$/',
-                    $phone
-                )
-            ) {
+            } catch (Throwable $e) {
 
-                $error =
-                    'Please enter a valid Uganda mobile number. ' .
-                    'Example: 0704487563 or 256704487563.';
+                error_log(
+                    'Failed to update SMS log: ' .
+                    $e->getMessage()
+                );
             }
         }
 
-
-        /*
-        |--------------------------------------------------------------------------
-        | MESSAGE VALIDATION
-        |--------------------------------------------------------------------------
-        */
-
         if (
-            $error === null &&
-            $message === ''
+            $errorMessage === '' &&
+            $jsonPayload !== false
         ) {
 
-            $error =
-                'Please enter a message.';
-        }
-
-
-        if (
-            $error === null &&
-            mb_strlen($message) > 1000
-        ) {
-
-            $error =
-                'Message cannot exceed 1000 characters.';
-        }
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | SEND SMS
-        |--------------------------------------------------------------------------
-        */
-
-        if ($error === null) {
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | Yoola Request
-            |--------------------------------------------------------------------------
-            */
-
-            $data = [
-
-                'api_key' =>
-                    $yoolaApiKey,
-
-                'phone' =>
-                    $phone,
-
-                'message' =>
-                    $message,
-
-            ];
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | Convert to JSON
-            |--------------------------------------------------------------------------
-            */
-
-            $jsonData = json_encode(
-                $data,
-                JSON_UNESCAPED_UNICODE |
-                JSON_UNESCAPED_SLASHES |
-                JSON_THROW_ON_ERROR
+            $ch = curl_init(
+                $smsApiUrl
             );
 
+            curl_setopt_array(
+                $ch,
+                [
 
-            /*
-            |--------------------------------------------------------------------------
-            | Initialize CURL
-            |--------------------------------------------------------------------------
-            */
+                    CURLOPT_POST =>
+                        true,
 
-            $ch =
-                curl_init(
-                    $yoolaApiUrl
-                );
+                    CURLOPT_RETURNTRANSFER =>
+                        true,
 
+                    CURLOPT_HTTPHEADER => [
+                        'Authorization: Bearer ' . $smsApiKey,
+                        'Content-Type: application/json',
+                        'Accept: application/json',
+                    ],
 
-            if ($ch === false) {
+                    CURLOPT_POSTFIELDS =>
+                        $jsonPayload,
 
-                $error =
-                    'Could not initialize the Yoola connection.';
+                    CURLOPT_TIMEOUT =>
+                        30,
 
-            } else {
+                    CURLOPT_CONNECTTIMEOUT =>
+                        10,
 
+                    CURLOPT_SSL_VERIFYPEER =>
+                        true,
 
-                /*
-                |--------------------------------------------------------------------------
-                | CURL OPTIONS
-                |--------------------------------------------------------------------------
-                */
+                    CURLOPT_SSL_VERIFYHOST =>
+                        2,
+                ]
+            );
 
-                curl_setopt_array(
+            $responseBody =
+                curl_exec($ch);
+
+            $curlError =
+                curl_error($ch);
+
+            $httpCode =
+                (int)curl_getinfo(
                     $ch,
-                    [
-
-                        CURLOPT_POST =>
-                            true,
-
-                        CURLOPT_POSTFIELDS =>
-                            $jsonData,
-
-                        CURLOPT_HTTPHEADER =>
-                            [
-
-                                'Content-Type: application/json',
-
-                                'Accept: application/json',
-
-                            ],
-
-                        CURLOPT_RETURNTRANSFER =>
-                            true,
-
-                        CURLOPT_TIMEOUT =>
-                            30,
-
-                        CURLOPT_CONNECTTIMEOUT =>
-                            10,
-
-                        /*
-                        |--------------------------------------------------------------------------
-                        | Keep SSL verification enabled
-                        |--------------------------------------------------------------------------
-                        */
-
-                        CURLOPT_SSL_VERIFYPEER =>
-                            true,
-
-                        CURLOPT_SSL_VERIFYHOST =>
-                            2,
-
-                    ]
+                    CURLINFO_HTTP_CODE
                 );
 
+            curl_close($ch);
 
-                /*
-                |--------------------------------------------------------------------------
-                | SEND REQUEST
-                |--------------------------------------------------------------------------
-                */
+            /**
+             * Never expose the API key in the response.
+             */
+            $providerResponse =
+                $responseBody !== false
+                    ? $responseBody
+                    : null;
 
-                $response =
-                    curl_exec($ch);
+            /* ---------------------------------------------
+               CURL FAILURE
+               --------------------------------------------- */
 
+            if (
+                $responseBody === false ||
+                $curlError !== ''
+            ) {
 
-                /*
-                |--------------------------------------------------------------------------
-                | HTTP STATUS
-                |--------------------------------------------------------------------------
-                */
-
-                $httpCode =
-                    curl_getinfo(
-                        $ch,
-                        CURLINFO_HTTP_CODE
+                $failureReason =
+                    'Connection error: ' .
+                    (
+                        $curlError !== ''
+                            ? $curlError
+                            : 'Unknown cURL error'
                     );
 
+                try {
 
-                /*
-                |--------------------------------------------------------------------------
-                | CURL ERROR
-                |--------------------------------------------------------------------------
-                */
+                    $updateLog = $db->prepare(
+                        "
+                        UPDATE sms_logs
+                        SET
+                            status = 'FAILED',
+                            failure_reason = :reason,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = :id
+                        "
+                    );
 
-                $curlError =
-                    curl_error($ch);
+                    $updateLog->execute([
+                        ':reason' =>
+                            $failureReason,
 
+                        ':id' =>
+                            $smsLogId,
+                    ]);
 
-                /*
-                |--------------------------------------------------------------------------
-                | CLOSE CURL
-                |--------------------------------------------------------------------------
-                */
+                } catch (Throwable $e) {
 
-                curl_close($ch);
+                    error_log(
+                        'SMS failed-log update error: ' .
+                        $e->getMessage()
+                    );
+                }
 
+                $errorMessage =
+                    'SMS could not be sent because SMS.UG could not be reached.';
 
-                /*
-                |--------------------------------------------------------------------------
-                | CONNECTION ERROR
-                |--------------------------------------------------------------------------
-                */
+                error_log(
+                    'SMS.UG cURL error: ' .
+                    $failureReason
+                );
+            }
+
+            /* ---------------------------------------------
+               PROCESS SMS.UG RESPONSE
+               --------------------------------------------- */
+
+            else {
+
+                $providerData =
+                    json_decode(
+                        $responseBody,
+                        true
+                    );
+
+                /* -----------------------------------------
+                   SUCCESS
+                   ----------------------------------------- */
 
                 if (
-                    $response === false ||
-                    $curlError !== ''
+                    $httpCode === 200 &&
+                    is_array($providerData) &&
+                    ($providerData['status'] ?? '')
+                        === 'success'
                 ) {
 
-                    $error =
-                        'Could not connect to Yoola.';
+                    /**
+                     * SMS.UG calls this a token.
+                     *
+                     * It uniquely identifies the message.
+                     */
+                    $providerToken =
+                        isset(
+                            $providerData['token']
+                        )
+                            ? (string)$providerData['token']
+                            : null;
 
-                    if ($curlError !== '') {
+                    try {
 
-                        $error .=
-                            ' CURL Error: ' .
-                            $curlError;
-                    }
-
-                } else {
-
-
-                    /*
-                    |--------------------------------------------------------------------------
-                    | DECODE RESPONSE
-                    |--------------------------------------------------------------------------
-                    */
-
-                    $decodedResponse =
-                        json_decode(
-                            $response,
-                            true
+                        $updateLog = $db->prepare(
+                            "
+                            UPDATE sms_logs
+                            SET
+                                status = 'SENT',
+                                provider_message_id = :token,
+                                sent_at = CURRENT_TIMESTAMP,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE id = :id
+                            "
                         );
 
+                        $updateLog->execute([
+                            ':token' =>
+                                $providerToken,
 
-                    /*
-                    |--------------------------------------------------------------------------
-                    | JSON RESPONSE
-                    |--------------------------------------------------------------------------
-                    */
+                            ':id' =>
+                                $smsLogId,
+                        ]);
 
-                    if (
-                        json_last_error() ===
-                        JSON_ERROR_NONE
-                    ) {
+                    } catch (Throwable $e) {
 
-                        $result =
-                            $decodedResponse;
-
-                    } else {
-
-                        $result =
-                            [
-
-                                'raw_response' =>
-                                    $response,
-
-                            ];
+                        error_log(
+                            'SMS success-log update failed: ' .
+                            $e->getMessage()
+                        );
                     }
 
+                    /* -------------------------------------
+                       AUDIT LOG
+                       ------------------------------------- */
 
-                    /*
-                    |--------------------------------------------------------------------------
-                    | HTTP RESULT
-                    |--------------------------------------------------------------------------
-                    */
+                    try {
 
-                    if (
-                        $httpCode >= 200 &&
-                        $httpCode < 300
-                    ) {
+                        logAudit(
+                            $adminId,
+                            'SMS_REMINDER_SENT',
+                            sprintf(
+                                'Rent reminder SMS sent to tenant ID %d (%s), phone %s, outstanding balance %s, SMS log ID %d, SMS.UG token %s.',
+                                $tenantId,
+                                $tenantName,
+                                $normalizedPhone,
+                                money($outstandingBalance),
+                                $smsLogId,
+                                $providerToken ?? 'N/A'
+                            )
+                        );
 
-                        $success =
-                            'Yoola accepted the SMS request. ' .
-                            'Check the response below for the exact provider status.';
+                    } catch (Throwable $e) {
 
-                    } else {
-
-                        $error =
-                            'Yoola returned HTTP ' .
-                            $httpCode .
-                            '. Check the response below.';
+                        error_log(
+                            'Audit logging failed: ' .
+                            $e->getMessage()
+                        );
                     }
+
+                    $successMessage =
+                        'SMS was accepted by SMS.UG and recorded successfully.';
+                }
+
+                /* -----------------------------------------
+                   FAILURE
+                   ----------------------------------------- */
+
+                else {
+
+                    /**
+                     * Try to extract SMS.UG's documented
+                     * error information.
+                     */
+                    $providerError =
+                        is_array($providerData)
+                            ? (
+                                (string)(
+                                    $providerData['message']
+                                    ?? $providerData['error']
+                                    ?? ''
+                                )
+                            )
+                            : '';
+
+                    $failureReason =
+                        $providerError !== ''
+                            ? $providerError
+                            : 'SMS.UG returned HTTP ' .
+                              $httpCode;
+
+                    try {
+
+                        $updateLog = $db->prepare(
+                            "
+                            UPDATE sms_logs
+                            SET
+                                status = 'FAILED',
+                                failure_reason = :reason,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE id = :id
+                            "
+                        );
+
+                        $updateLog->execute([
+                            ':reason' =>
+                                mb_substr(
+                                    $failureReason,
+                                    0,
+                                    1000
+                                ),
+
+                            ':id' =>
+                                $smsLogId,
+                        ]);
+
+                    } catch (Throwable $e) {
+
+                        error_log(
+                            'SMS failure-log update failed: ' .
+                            $e->getMessage()
+                        );
+                    }
+
+                    /**
+                     * Convert known SMS.UG errors into
+                     * useful manager-facing messages.
+                     */
+                    $errorCode =
+                        is_array($providerData)
+                            ? (
+                                string)(
+                                    $providerData['error']
+                                    ?? ''
+                                )
+                            )
+                            : '';
+
+                    $friendlyError =
+                        match ($errorCode) {
+
+                            'insufficient_balance' =>
+                                'SMS.UG does not have enough balance to send this SMS.',
+
+                            'invalid_contacts' =>
+                                'SMS.UG rejected the phone number. Please check the tenant\'s number.',
+
+                            'message_too_long' =>
+                                'SMS.UG rejected the message because it exceeds 480 characters.',
+
+                            'invalid_title' =>
+                                'SMS.UG rejected the SMS title.',
+
+                            'api_disabled' =>
+                                'SMS.UG API access is disabled. Enable API access in your SMS.UG account settings.',
+
+                            'unauthorized' =>
+                                'SMS.UG rejected the API credentials. Check your SMS_UG_API_KEY.',
+
+                            'rate_limited' =>
+                                'SMS.UG rate limit reached. Please wait before trying again.',
+
+                            'gateway_failed' =>
+                                'SMS.UG could not deliver the message to the SMS gateway. You were not charged.',
+
+                            'internal_error' =>
+                                'SMS.UG encountered an internal error. Please try again.',
+
+                            default =>
+                                'SMS.UG rejected the SMS request. ' .
+                                $failureReason,
+                        };
+
+                    $errorMessage =
+                        $friendlyError;
+
+                    error_log(
+                        'SMS.UG API failure: ' .
+                        $failureReason
+                    );
                 }
             }
         }
@@ -609,9 +1232,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 ?>
-
 <!DOCTYPE html>
-
 <html lang="en">
 
 <head>
@@ -624,830 +1245,698 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     >
 
     <title>
-        SMS Reminder | Rental Management System
+        Remind Tenant —
+        <?= e($tenantName) ?>
     </title>
 
-
-    <style>
-
-        * {
-            box-sizing: border-box;
-        }
-
-
-        body {
-
-            margin: 0;
-
-            font-family:
-                Inter,
-                -apple-system,
-                BlinkMacSystemFont,
-                "Segoe UI",
-                sans-serif;
-
-            background: #f5f7fb;
-
-            color: #172033;
-        }
-
-
-        .container {
-
-            width:
-                min(
-                    900px,
-                    calc(100% - 32px)
-                );
-
-            margin:
-                50px auto;
-        }
-
-
-        .header {
-
-            margin-bottom: 24px;
-        }
-
-
-        .header h1 {
-
-            margin:
-                0 0 8px;
-
-            font-size: 30px;
-        }
-
-
-        .header p {
-
-            margin: 0;
-
-            color: #687386;
-
-            line-height: 1.6;
-        }
-
-
-        .card {
-
-            background: white;
-
-            border-radius: 16px;
-
-            padding: 28px;
-
-            box-shadow:
-                0 8px 30px
-                rgba(
-                    15,
-                    23,
-                    42,
-                    0.07
-                );
-
-            margin-bottom: 20px;
-        }
-
-
-        .card h2 {
-
-            margin-top: 0;
-
-            margin-bottom: 6px;
-
-            font-size: 20px;
-        }
-
-
-        .card-description {
-
-            color: #6b7280;
-
-            margin-top: 0;
-
-            margin-bottom: 24px;
-
-            line-height: 1.6;
-        }
-
-
-        .form-group {
-
-            margin-bottom: 20px;
-        }
-
-
-        label {
-
-            display: block;
-
-            font-weight: 600;
-
-            margin-bottom: 8px;
-        }
-
-
-        input,
-        textarea {
-
-            width: 100%;
-
-            border:
-                1px solid #d8dee9;
-
-            border-radius: 10px;
-
-            padding:
-                13px 14px;
-
-            font-size: 15px;
-
-            outline: none;
-
-            transition:
-                border-color 0.2s;
-
-            font-family: inherit;
-        }
-
-
-        input:focus,
-        textarea:focus {
-
-            border-color: #4f46e5;
-        }
-
-
-        textarea {
-
-            min-height: 130px;
-
-            resize: vertical;
-        }
-
-
-        .help {
-
-            display: block;
-
-            margin-top: 7px;
-
-            font-size: 13px;
-
-            color: #7b8494;
-        }
-
-
-        .button {
-
-            border: 0;
-
-            border-radius: 10px;
-
-            padding:
-                13px 20px;
-
-            font-size: 15px;
-
-            font-weight: 600;
-
-            cursor: pointer;
-
-            background: #4f46e5;
-
-            color: white;
-
-            transition: 0.2s;
-        }
-
-
-        .button:hover {
-
-            background: #4338ca;
-        }
-
-
-        .button:disabled {
-
-            opacity: 0.6;
-
-            cursor:
-                not-allowed;
-        }
-
-
-        .alert {
-
-            border-radius: 10px;
-
-            padding:
-                15px 16px;
-
-            margin-bottom: 20px;
-
-            line-height: 1.5;
-        }
-
-
-        .alert-error {
-
-            background: #fef2f2;
-
-            color: #991b1b;
-
-            border:
-                1px solid #fecaca;
-        }
-
-
-        .alert-success {
-
-            background: #f0fdf4;
-
-            color: #166534;
-
-            border:
-                1px solid #bbf7d0;
-        }
-
-
-        .response-box {
-
-            background: #111827;
-
-            color: #e5e7eb;
-
-            padding: 20px;
-
-            border-radius: 10px;
-
-            overflow-x: auto;
-        }
-
-
-        pre {
-
-            margin: 0;
-
-            white-space:
-                pre-wrap;
-
-            word-break:
-                break-word;
-
-            line-height: 1.6;
-        }
-
-
-        .status {
-
-            display: inline-block;
-
-            padding:
-                5px 10px;
-
-            border-radius:
-                999px;
-
-            font-size: 13px;
-
-            font-weight: 700;
-
-            margin-bottom: 12px;
-        }
-
-
-        .status-success {
-
-            background: #dcfce7;
-
-            color: #166534;
-        }
-
-
-        .status-error {
-
-            background: #fee2e2;
-
-            color: #991b1b;
-        }
-
-
-        .info-grid {
-
-            display: grid;
-
-            grid-template-columns:
-                repeat(
-                    3,
-                    1fr
-                );
-
-            gap: 12px;
-
-            margin-top: 20px;
-        }
-
-
-        .info-item {
-
-            background: #f8fafc;
-
-            border-radius: 10px;
-
-            padding: 14px;
-        }
-
-
-        .info-label {
-
-            display: block;
-
-            font-size: 12px;
-
-            color: #6b7280;
-
-            margin-bottom: 5px;
-        }
-
-
-        .info-value {
-
-            font-weight: 700;
-
-            word-break:
-                break-word;
-        }
-
-
-        .check-list {
-
-            padding-left: 20px;
-
-            line-height: 1.9;
-
-            color: #4b5563;
-        }
-
-
-        @media (max-width: 650px) {
-
-            .container {
-
-                margin:
-                    25px auto;
-            }
-
-
-            .card {
-
-                padding: 20px;
-            }
-
-
-            .info-grid {
-
-                grid-template-columns:
-                    1fr;
-            }
-
-
-            .header h1 {
-
-                font-size: 25px;
-            }
-
-        }
-
-    </style>
+    <link
+        rel="stylesheet"
+        href="assets/css/tailwind.css"
+    >
 
 </head>
 
+<body class="bg-slate-50 text-slate-900">
 
-<body>
+<main class="min-h-screen">
 
+    <div
+        class="mx-auto max-w-5xl px-4 py-8 sm:px-6 lg:px-8"
+    >
 
-<div class="container">
+        <!-- BACK -->
 
+        <div class="mb-6">
 
-    <!-- =========================================================
-         HEADER
-    ========================================================== -->
-
-    <div class="header">
-
-        <h1>
-            SMS Reminder
-        </h1>
-
-        <p>
-            Test the Yoola SMS integration before
-            connecting it to your tenant and
-            rent-reminder system.
-        </p>
-
-    </div>
-
-
-    <!-- =========================================================
-         ERROR
-    ========================================================== -->
-
-    <?php if ($error !== null): ?>
-
-        <div class="alert alert-error">
-
-            <strong>
-                SMS could not be sent.
-            </strong>
-
-            <br>
-
-            <?= e($error) ?>
+            <a
+                href="tenants.php"
+                class="inline-flex items-center gap-2 text-sm font-medium text-slate-600 hover:text-slate-900"
+            >
+                ← Back to Tenants
+            </a>
 
         </div>
 
-    <?php endif; ?>
+        <!-- HEADER -->
 
+        <div class="mb-8">
 
-    <!-- =========================================================
-         SUCCESS
-    ========================================================== -->
+            <p
+                class="mb-2 text-sm font-semibold uppercase tracking-wider text-indigo-600"
+            >
+                Rent Reminder
+            </p>
 
-    <?php if ($success !== null): ?>
+            <h1
+                class="text-3xl font-bold tracking-tight text-slate-900"
+            >
+                Remind <?= e($tenantName) ?>
+            </h1>
 
-        <div class="alert alert-success">
-
-            <strong>
-                SMS request submitted.
-            </strong>
-
-            <br>
-
-            <?= e($success) ?>
+            <p
+                class="mt-2 text-sm text-slate-500"
+            >
+                Review the tenant's balance and SMS before sending.
+            </p>
 
         </div>
 
-    <?php endif; ?>
+        <!-- SUCCESS -->
 
+        <?php if ($successMessage !== ''): ?>
 
-    <!-- =========================================================
-         SMS FORM
-    ========================================================== -->
+            <div
+                class="mb-6 rounded-xl border border-emerald-200 bg-emerald-50 p-4"
+            >
 
-    <div class="card">
+                <div class="flex gap-3">
 
-        <h2>
-            Send Test SMS
-        </h2>
+                    <div
+                        class="mt-0.5 text-emerald-600"
+                    >
+                        ✓
+                    </div>
 
-        <p class="card-description">
+                    <div>
 
-            Enter a Uganda mobile number and send
-            one test message through Yoola.
+                        <h2
+                            class="font-semibold text-emerald-800"
+                        >
+                            SMS Sent
+                        </h2>
 
-        </p>
+                        <p
+                            class="mt-1 text-sm text-emerald-700"
+                        >
+                            <?= e($successMessage) ?>
+                        </p>
 
+                    </div>
 
-        <form
-            method="POST"
-            id="smsForm"
+                </div>
+
+            </div>
+
+        <?php endif; ?>
+
+        <!-- ERROR -->
+
+        <?php if ($errorMessage !== ''): ?>
+
+            <div
+                class="mb-6 rounded-xl border border-red-200 bg-red-50 p-4"
+            >
+
+                <div class="flex gap-3">
+
+                    <div
+                        class="mt-0.5 font-bold text-red-600"
+                    >
+                        !
+                    </div>
+
+                    <div>
+
+                        <h2
+                            class="font-semibold text-red-800"
+                        >
+                            SMS Not Sent
+                        </h2>
+
+                        <p
+                            class="mt-1 text-sm text-red-700"
+                        >
+                            <?= e($errorMessage) ?>
+                        </p>
+
+                    </div>
+
+                </div>
+
+            </div>
+
+        <?php endif; ?>
+
+        <div
+            class="grid gap-6 lg:grid-cols-3"
         >
 
+            <!-- =================================================
+                 TENANT SUMMARY
+                 ================================================= -->
 
-            <!-- CSRF -->
-
-            <input
-                type="hidden"
-                name="csrf_token"
-                value="<?= e($csrfToken) ?>"
+            <section
+                class="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm lg:col-span-1"
             >
 
+                <div class="mb-5">
 
-            <!-- PHONE -->
+                    <h2
+                        class="text-lg font-semibold text-slate-900"
+                    >
+                        Tenant
+                    </h2>
 
-            <div class="form-group">
+                </div>
 
-                <label for="phone">
+                <div class="space-y-5">
 
-                    Phone Number
+                    <!-- NAME -->
 
-                </label>
+                    <div>
 
+                        <p
+                            class="text-xs font-medium uppercase tracking-wide text-slate-400"
+                        >
+                            Name
+                        </p>
 
-                <input
-                    type="text"
-                    id="phone"
-                    name="phone"
-                    value="<?= e($phone) ?>"
-                    placeholder="0704487563"
-                    autocomplete="tel"
-                    required
+                        <p
+                            class="mt-1 font-semibold text-slate-900"
+                        >
+                            <?= e($tenantName) ?>
+                        </p>
+
+                    </div>
+
+                    <!-- PHONE -->
+
+                    <div>
+
+                        <p
+                            class="text-xs font-medium uppercase tracking-wide text-slate-400"
+                        >
+                            Phone
+                        </p>
+
+                        <p
+                            class="mt-1 text-slate-700"
+                        >
+                            <?= e(
+                                $tenantPhone !== ''
+                                    ? $tenantPhone
+                                    : 'No phone number'
+                            ) ?>
+                        </p>
+
+                    </div>
+
+                    <!-- ROOM -->
+
+                    <div>
+
+                        <p
+                            class="text-xs font-medium uppercase tracking-wide text-slate-400"
+                        >
+                            Room
+                        </p>
+
+                        <p
+                            class="mt-1 font-semibold text-slate-900"
+                        >
+                            <?= e(
+                                $roomNumber !== ''
+                                    ? $roomNumber
+                                    : 'Not assigned'
+                            ) ?>
+                        </p>
+
+                        <?php if ($roomType !== ''): ?>
+
+                            <p
+                                class="text-xs text-slate-500"
+                            >
+                                <?= e($roomType) ?>
+                            </p>
+
+                        <?php endif; ?>
+
+                    </div>
+
+                    <!-- RENT -->
+
+                    <div>
+
+                        <p
+                            class="text-xs font-medium uppercase tracking-wide text-slate-400"
+                        >
+                            Monthly Rent
+                        </p>
+
+                        <p
+                            class="mt-1 text-lg font-bold text-slate-900"
+                        >
+                            <?= e(
+                                money($effectiveRent)
+                            ) ?>
+                        </p>
+
+                    </div>
+
+                    <!-- MONTH -->
+
+                    <div>
+
+                        <p
+                            class="text-xs font-medium uppercase tracking-wide text-slate-400"
+                        >
+                            Payment Month
+                        </p>
+
+                        <p
+                            class="mt-1 font-medium text-slate-700"
+                        >
+                            <?= e($paymentMonth) ?>
+                        </p>
+
+                    </div>
+
+                    <!-- FINANCIAL SUMMARY -->
+
+                    <div
+                        class="rounded-xl border border-slate-200 bg-slate-50 p-4"
+                    >
+
+                        <div
+                            class="flex items-center justify-between"
+                        >
+
+                            <span
+                                class="text-sm text-slate-500"
+                            >
+                                Amount Due
+                            </span>
+
+                            <span
+                                class="font-semibold text-slate-900"
+                            >
+                                <?= e(
+                                    money($amountDue)
+                                ) ?>
+                            </span>
+
+                        </div>
+
+                        <div
+                            class="mt-3 flex items-center justify-between"
+                        >
+
+                            <span
+                                class="text-sm text-slate-500"
+                            >
+                                Amount Paid
+                            </span>
+
+                            <span
+                                class="font-semibold text-emerald-600"
+                            >
+                                <?= e(
+                                    money($amountPaid)
+                                ) ?>
+                            </span>
+
+                        </div>
+
+                        <div
+                            class="mt-3 border-t border-slate-200 pt-3"
+                        >
+
+                            <div
+                                class="flex items-center justify-between"
+                            >
+
+                                <span
+                                    class="text-sm font-medium text-slate-700"
+                                >
+                                    Outstanding
+                                </span>
+
+                                <span
+                                    class="text-lg font-bold
+                                    <?= $outstandingBalance > 0
+                                        ? 'text-red-600'
+                                        : 'text-emerald-600' ?>"
+                                >
+                                    <?= e(
+                                        money(
+                                            $outstandingBalance
+                                        )
+                                    ) ?>
+                                </span>
+
+                            </div>
+
+                        </div>
+
+                    </div>
+
+                    <!-- STATUS -->
+
+                    <div>
+
+                        <span
+                            class="inline-flex rounded-full px-3 py-1 text-xs font-semibold
+                            <?= $paymentStatus === 'Paid'
+                                ? 'bg-emerald-100 text-emerald-700'
+                                : (
+                                    $paymentStatus === 'Overdue'
+                                        ? 'bg-red-100 text-red-700'
+                                        : 'bg-amber-100 text-amber-700'
+                                ) ?>"
+                        >
+                            <?= e($paymentStatus) ?>
+                        </span>
+
+                        <?php if ($daysOverdue > 0): ?>
+
+                            <p
+                                class="mt-2 text-xs text-red-600"
+                            >
+                                <?= $daysOverdue ?>
+                                day<?= $daysOverdue === 1 ? '' : 's' ?>
+                                overdue
+                            </p>
+
+                        <?php endif; ?>
+
+                    </div>
+
+                </div>
+
+            </section>
+
+            <!-- =================================================
+                 SMS FORM
+                 ================================================= -->
+
+            <section
+                class="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm lg:col-span-2"
+            >
+
+                <div class="mb-6">
+
+                    <h2
+                        class="text-lg font-semibold text-slate-900"
+                    >
+                        SMS Reminder
+                    </h2>
+
+                    <p
+                        class="mt-1 text-sm text-slate-500"
+                    >
+                        Review the recipient and message before sending.
+                    </p>
+
+                </div>
+
+                <form
+                    method="POST"
+                    action=""
+                    id="smsForm"
+                    class="space-y-6"
                 >
 
+                    <input
+                        type="hidden"
+                        name="csrf_token"
+                        value="<?= e($csrfToken) ?>"
+                    >
+
+                    <input
+                        type="hidden"
+                        name="tenant_id"
+                        value="<?= (int)$tenantId ?>"
+                    >
+
+                    <!-- PHONE -->
+
+                    <div>
+
+                        <label
+                            for="phone"
+                            class="mb-2 block text-sm font-medium text-slate-700"
+                        >
+                            Recipient phone number
+                        </label>
+
+                        <input
+                            type="text"
+                            id="phone"
+                            name="phone"
+                            value="<?= e($phoneForForm) ?>"
+                            autocomplete="tel"
+                            required
+                            class="block w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
+                            placeholder="0704487563"
+                        >
+
+                        <p
+                            class="mt-2 text-xs text-slate-500"
+                        >
+                            Example:
+                            0704487563
+                        </p>
+
+                    </div>
+
+                    <!-- MESSAGE -->
+
+                    <div>
+
+                        <div
+                            class="mb-2 flex items-center justify-between"
+                        >
+
+                            <label
+                                for="message"
+                                class="block text-sm font-medium text-slate-700"
+                            >
+                                Message
+                            </label>
+
+                            <span
+                                id="charCounter"
+                                class="text-xs text-slate-400"
+                            >
+                                <?= mb_strlen($message) ?>/480
+                            </span>
+
+                        </div>
+
+                        <textarea
+                            id="message"
+                            name="message"
+                            rows="8"
+                            maxlength="480"
+                            required
+                            class="block w-full resize-y rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm leading-6 outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
+                        ><?= e($message) ?></textarea>
+
+                        <p
+                            class="mt-2 text-xs text-slate-500"
+                        >
+                            Messages above 160 characters may use more than one SMS unit.
+                        </p>
+
+                    </div>
+
+                    <!-- BALANCE -->
+
+                    <?php if ($outstandingBalance > 0): ?>
+
+                        <div
+                            class="rounded-xl border border-amber-200 bg-amber-50 p-4"
+                        >
+
+                            <div class="flex gap-3">
+
+                                <div
+                                    class="text-amber-600"
+                                >
+                                    ⚠
+                                </div>
+
+                                <div>
 
-                <small class="help">
+                                    <p
+                                        class="text-sm font-semibold text-amber-800"
+                                    >
+                                        Outstanding balance:
+                                        <?= e(
+                                            money(
+                                                $outstandingBalance
+                                            )
+                                        ) ?>
+                                    </p>
 
-                    You can enter:
+                                    <p
+                                        class="mt-1 text-xs text-amber-700"
+                                    >
+                                        The system will verify the balance again before sending.
+                                    </p>
 
-                    <strong>
-                        0704487563
-                    </strong>
+                                </div>
 
-                    or
+                            </div>
 
-                    <strong>
-                        256704487563
-                    </strong>
+                        </div>
 
-                </small>
+                    <?php else: ?>
 
-            </div>
+                        <div
+                            class="rounded-xl border border-emerald-200 bg-emerald-50 p-4"
+                        >
 
+                            <p
+                                class="text-sm font-semibold text-emerald-800"
+                            >
+                                This tenant currently has no outstanding balance.
+                            </p>
 
-            <!-- MESSAGE -->
+                        </div>
 
-            <div class="form-group">
+                    <?php endif; ?>
 
-                <label for="message">
+                    <!-- ACTIONS -->
 
-                    Message
+                    <div
+                        class="flex flex-col-reverse gap-3 border-t border-slate-200 pt-6 sm:flex-row sm:justify-end"
+                    >
 
-                </label>
+                        <a
+                            href="tenants.php"
+                            class="inline-flex items-center justify-center rounded-xl border border-slate-300 px-5 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+                        >
+                            Cancel
+                        </a>
 
+                        <button
+                            type="submit"
+                            id="sendButton"
+                            <?= $outstandingBalance <= 0
+                                ? 'disabled'
+                                : '' ?>
+                            class="inline-flex items-center justify-center rounded-xl bg-indigo-600 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
 
-                <textarea
-                    id="message"
-                    name="message"
-                    maxlength="1000"
-                    required
-                ><?= e($message) ?></textarea>
+                            <span id="sendButtonText">
+                                Send SMS
+                            </span>
 
+                        </button>
 
-                <small class="help">
+                    </div>
 
-                    This is a test SMS.
-                    Yoola SMS charges may apply.
+                </form>
 
-                </small>
-
-            </div>
-
-
-            <!-- BUTTON -->
-
-            <button
-                type="submit"
-                class="button"
-                id="sendButton"
-            >
-
-                Send Test SMS
-
-            </button>
-
-
-        </form>
-
-    </div>
-
-
-    <!-- =========================================================
-         YOOLA RESPONSE
-    ========================================================== -->
-
-    <?php if ($result !== null): ?>
-
-        <div class="card">
-
-            <h2>
-                Yoola Response
-            </h2>
-
-
-            <?php
-
-            $isHttpSuccess =
-                $httpCode !== null &&
-                $httpCode >= 200 &&
-                $httpCode < 300;
-
-            ?>
-
-
-            <?php if ($isHttpSuccess): ?>
-
-                <span class="status status-success">
-
-                    HTTP
-                    <?= e(
-                        (string) $httpCode
-                    ) ?>
-
-                </span>
-
-            <?php else: ?>
-
-                <span class="status status-error">
-
-                    HTTP
-                    <?= e(
-                        (string) (
-                            $httpCode ??
-                            'Unknown'
-                        )
-                    ) ?>
-
-                </span>
-
-            <?php endif; ?>
-
-
-            <!-- RESPONSE SUMMARY -->
-
-            <div class="info-grid">
-
-
-                <div class="info-item">
-
-                    <span class="info-label">
-                        Phone
-                    </span>
-
-                    <span class="info-value">
-
-                        <?= e($phone) ?>
-
-                    </span>
-
-                </div>
-
-
-                <div class="info-item">
-
-                    <span class="info-label">
-                        HTTP Status
-                    </span>
-
-                    <span class="info-value">
-
-                        <?= e(
-                            (string) (
-                                $httpCode ??
-                                'Unknown'
-                            )
-                        ) ?>
-
-                    </span>
-
-                </div>
-
-
-                <div class="info-item">
-
-                    <span class="info-label">
-                        Provider
-                    </span>
-
-                    <span class="info-value">
-
-                        Yoola SMS
-
-                    </span>
-
-                </div>
-
-
-            </div>
-
-
-            <!-- RAW RESPONSE -->
-
-            <div style="margin-top:20px;">
-
-                <h3>
-                    Provider Response
-                </h3>
-
-
-                <div class="response-box">
-
-                    <pre><?= e(
-                        json_encode(
-                            $result,
-                            JSON_PRETTY_PRINT |
-                            JSON_UNESCAPED_SLASHES |
-                            JSON_UNESCAPED_UNICODE
-                        )
-                    ) ?></pre>
-
-                </div>
-
-            </div>
+            </section>
 
         </div>
 
-    <?php endif; ?>
+        <!-- =====================================================
+             PROVIDER RESPONSE
+             ===================================================== -->
 
+        <?php if ($providerResponse !== null): ?>
 
-    <!-- =========================================================
-         STATUS
-    ========================================================== -->
+            <section
+                class="mt-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"
+            >
 
-    <div class="card">
+                <div class="mb-3">
 
-        <h2>
-            Integration Status
-        </h2>
+                    <h2
+                        class="text-sm font-semibold text-slate-900"
+                    >
+                        SMS.UG Response
+                    </h2>
 
+                </div>
 
-        <p class="card-description">
+                <pre
+                    class="overflow-x-auto rounded-xl bg-slate-900 p-4 text-xs leading-6 text-slate-200"
+                ><?= e($providerResponse) ?></pre>
 
-            This page is currently only a Yoola
-            integration test. Do not connect
-            automatic rent reminders until this
-            test successfully sends an SMS.
+                <p
+                    class="mt-3 text-xs text-slate-500"
+                >
+                    A successful response means SMS.UG accepted the message. Delivery status is available from the SMS.UG dashboard, but their documentation does not currently provide a status-lookup API.
+                </p>
 
-        </p>
+            </section>
 
-
-        <ul class="check-list">
-
-            <li>
-                Environment configuration
-            </li>
-
-            <li>
-                Secure API-key loading
-            </li>
-
-            <li>
-                CSRF protection
-            </li>
-
-            <li>
-                Uganda phone-number formatting
-            </li>
-
-            <li>
-                JSON API request
-            </li>
-
-            <li>
-                HTTP response handling
-            </li>
-
-            <li>
-                CURL error handling
-            </li>
-
-            <li>
-                Yoola response display
-            </li>
-
-            <li>
-                API key kept outside PHP source
-            </li>
-
-        </ul>
+        <?php endif; ?>
 
     </div>
 
-
-</div>
-
+</main>
 
 <script>
 
-/*
-|--------------------------------------------------------------------------
-| Prevent double submissions
-|--------------------------------------------------------------------------
-*/
+(function () {
 
-document
-    .getElementById('smsForm')
-    .addEventListener(
-        'submit',
-        function () {
+    const form =
+        document.getElementById('smsForm');
 
-            const button =
-                document.getElementById(
-                    'sendButton'
-                );
+    const message =
+        document.getElementById('message');
 
-            button.disabled = true;
+    const counter =
+        document.getElementById('charCounter');
 
-            button.textContent =
-                'Sending SMS...';
+    const button =
+        document.getElementById('sendButton');
 
-        }
-    );
+    const buttonText =
+        document.getElementById('sendButtonText');
+
+    /* -----------------------------------------------------
+       CHARACTER COUNTER
+       ----------------------------------------------------- */
+
+    if (message && counter) {
+
+        const updateCounter = function () {
+
+            counter.textContent =
+                message.value.length +
+                '/480';
+
+        };
+
+        message.addEventListener(
+            'input',
+            updateCounter
+        );
+
+        updateCounter();
+    }
+
+    /* -----------------------------------------------------
+       PREVENT DOUBLE SUBMISSION
+       ----------------------------------------------------- */
+
+    if (form && button) {
+
+        form.addEventListener(
+            'submit',
+            function () {
+
+                button.disabled = true;
+
+                if (buttonText) {
+
+                    buttonText.textContent =
+                        'Sending...';
+                }
+
+            }
+        );
+    }
+
+})();
 
 </script>
-
 
 </body>
 
