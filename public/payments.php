@@ -7,18 +7,8 @@ require_once __DIR__ . '/tenant_filter.php';
 
 require_login();
 
-function e($v): string {
-    return htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8');
-}
-
-function current_admin_id(): int
-{
-    if (isset($_SESSION['admin']['id'])) return (int)$_SESSION['admin']['id'];
-    return (int)($_SESSION['admin_id'] ?? 0);
-}
-
 /**
- * Fetch room types from DB (so filters always match real data)
+ * Fetch room types from DB so filters always match this administrator's data.
  */
 function roomTypesForAdmin(PDO $pdo, int $admin_id): array
 {
@@ -35,11 +25,6 @@ function roomTypesForAdmin(PDO $pdo, int $admin_id): array
     return array_values(array_unique(array_filter(array_map('strval', $rows))));
 }
 
-function tenantStatuses(): array
-{
-    return ['active', 'inactive', 'exited'];
-}
-
 function paymentStatuses(): array
 {
     return ['paid', 'partial', 'unpaid'];
@@ -53,108 +38,181 @@ if ($admin_id <= 0) {
 }
 
 $paymentService = new PaymentService($pdo);
+$success = is_scalar($_SESSION['success'] ?? null) ? trim((string)$_SESSION['success']) : '';
+unset($_SESSION['success']);
+$error = '';
+$paymentFormData = [];
 
-/* ---------------- HANDLE PAYMENT ---------------- */
-$success = '';
-$error   = '';
+$postString = static function (string $key, string $default = ''): string {
+    $value = $_POST[$key] ?? $default;
+    return is_scalar($value) ? trim((string)$value) : $default;
+};
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['receive_payment'])) {
+    $paymentFormData = [
+        'tenant_id' => 0,
+        'amount' => $postString('amount'),
+        'payment_date' => $postString('payment_date', date('Y-m-d')),
+        'method' => strtolower($postString('method', 'cash')),
+        'note' => $postString('note'),
+    ];
+
     try {
-        verify_csrf($_POST['csrf'] ?? '');
+        $csrfValue = $_POST['csrf'] ?? '';
+        verify_csrf(is_scalar($csrfValue) ? (string)$csrfValue : '');
 
-        $tenant_id = (int)($_POST['tenant_id'] ?? 0);
-        $amount    = (float)($_POST['amount'] ?? 0);
-        $method    = trim((string)($_POST['method'] ?? 'cash'));
-        $note      = trim((string)($_POST['note'] ?? ''));
-        $date      = (string)($_POST['payment_date'] ?? date('Y-m-d'));
+        $tenantValue = $_POST['tenant_id'] ?? 0;
+        $tenantId = is_scalar($tenantValue) ? filter_var($tenantValue, FILTER_VALIDATE_INT) : false;
+        $paymentFormData['tenant_id'] = $tenantId === false ? 0 : (int)$tenantId;
 
-        if ($tenant_id <= 0) throw new RuntimeException('Invalid tenant.');
-        if ($amount <= 0) throw new RuntimeException('Amount must be positive.');
-        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) throw new RuntimeException('Invalid date format.');
+        $amountRaw = $paymentFormData['amount'];
+        $amount = is_numeric($amountRaw) ? (float)$amountRaw : 0.0;
+        $method = $paymentFormData['method'];
+        $note = $paymentFormData['note'];
+        $date = $paymentFormData['payment_date'];
 
-        $check = $pdo->prepare("SELECT id FROM tenants WHERE id = :id AND admin_id = :admin LIMIT 1");
-        $check->execute([':id' => $tenant_id, ':admin' => $admin_id]);
-        if (!$check->fetch()) {
-            throw new RuntimeException('Tenant not found or not owned by your account.');
+        if ($paymentFormData['tenant_id'] <= 0) {
+            throw new RuntimeException('Invalid tenant.');
+        }
+        if ($amount <= 0 || !is_finite($amount)) {
+            throw new RuntimeException('Amount must be positive.');
+        }
+        if (!in_array($method, ['cash', 'mobile', 'bank'], true)) {
+            throw new RuntimeException('Please select a valid payment method.');
+        }
+        if (strlen($note) > 160) {
+            throw new RuntimeException('Payment note must be 160 characters or fewer.');
         }
 
-        $month = substr($date, 0, 7);
+        $paymentDateObject = DateTimeImmutable::createFromFormat('!Y-m-d', $date);
+        $dateErrors = DateTimeImmutable::getLastErrors();
+        $hasDateErrors = $dateErrors !== false && (
+            $dateErrors['warning_count'] > 0 ||
+            $dateErrors['error_count'] > 0
+        );
+        if (
+            $paymentDateObject === false ||
+            $hasDateErrors ||
+            $paymentDateObject->format('Y-m-d') !== $date
+        ) {
+            throw new RuntimeException('Please enter a valid payment date.');
+        }
+
+        // Repeat ownership and active eligibility before entering the service.
+        // The service repeats this guard for stale-page and race-safe protection.
+        $check = $pdo->prepare("
+            SELECT id
+            FROM tenants
+            WHERE id = :id
+              AND admin_id = :admin
+              AND LOWER(COALESCE(status, '')) = 'active'
+              AND exit_date IS NULL
+            LIMIT 1
+        ");
+        $check->execute([
+            ':id' => $paymentFormData['tenant_id'],
+            ':admin' => $admin_id,
+        ]);
+        if (!$check->fetch()) {
+            throw new RuntimeException('Tenant is no longer active or is not owned by your account.');
+        }
 
         $result = $paymentService->recordPayment(
-            $tenant_id,
-            $amount,
-            $month,
-            $date,
-            $admin_id
+            $paymentFormData['tenant_id'],
+            round($amount, 2),
+            $paymentDateObject->format('Y-m'),
+            $paymentDateObject->format('Y-m-d'),
+            $admin_id,
+            $method,
+            $note
         );
 
-        $success = (($result['status'] ?? '') === 'paid')
+        $successMessage = (($result['status'] ?? '') === 'paid')
             ? 'Payment recorded. Month fully paid.'
             : 'Partial payment recorded.';
-
-        if ($note !== '' && method_exists($paymentService, 'addNoteToLastPayment')) {
-            try { $paymentService->addNoteToLastPayment($tenant_id, $month, $note, $admin_id); } catch (Throwable $ignored) {}
-        }
 
         if (function_exists('logAudit')) {
             try {
                 logAudit(
                     $admin_id,
                     'PAYMENT_RECEIVED',
-                    "Tenant #{$tenant_id} paid {$amount} on {$date} ({$month})."
+                    "Tenant #{$paymentFormData['tenant_id']} paid " . number_format($amount, 2) . " on {$date} via {$method}."
                 );
-            } catch (Throwable $ignored) {}
+            } catch (Throwable $ignored) {
+                // Audit failure must not undo a committed payment.
+            }
         }
 
+        $_SESSION['success'] = $successMessage;
+        $redirectQuery = [];
+        foreach (['q', 'room_type', 'payment_status', 'page', 'sort_by', 'sort_order'] as $key) {
+            if (isset($_GET[$key]) && is_scalar($_GET[$key]) && (string)$_GET[$key] !== '') {
+                $redirectQuery[$key] = (string)$_GET[$key];
+            }
+        }
+        redirect('payments.php' . ($redirectQuery ? '?' . http_build_query($redirectQuery) : ''));
     } catch (Throwable $e) {
         $error = $e->getMessage();
     }
 }
 
-/* ---------------- GET FILTER PARAMETERS ---------------- */
-$search         = trim((string)($_GET['q'] ?? ''));
-$room_type      = trim((string)($_GET['room_type'] ?? ''));
-$tenant_status  = trim((string)($_GET['tenant_status'] ?? ''));
-$payment_status = trim((string)($_GET['payment_status'] ?? ''));
-$sort_by        = trim((string)($_GET['sort_by'] ?? 'full_name'));
-$sort_order     = strtoupper((string)($_GET['sort_order'] ?? 'ASC')) === 'DESC' ? 'DESC' : 'ASC';
-$page           = max(1, (int)($_GET['page'] ?? 1));
+$getString = static function (string $key, string $default = ''): string {
+    $value = $_GET[$key] ?? $default;
+    return is_scalar($value) ? trim((string)$value) : $default;
+};
 
+$search = $getString('q');
+$room_type = $getString('room_type');
+$tenantIdValue = $getString('tenant_id', '0');
+$tenantId = filter_var($tenantIdValue, FILTER_VALIDATE_INT);
+$tenantId = $tenantId === false ? 0 : max(0, (int)$tenantId);
+// Receive Payment intentionally has one roster: active tenants only.
+$tenant_status = 'active';
+$payment_status = $getString('payment_status');
+$sort_by = $getString('sort_by', 'full_name');
+$sort_order = strtoupper($getString('sort_order', 'ASC')) === 'DESC' ? 'DESC' : 'ASC';
+$page = max(1, (int)$getString('page', '1'));
 $perPage = 20;
-$offset  = ($page - 1) * $perPage;
 
-/* ---------------- FETCH TENANTS ---------------- */
 $params = [
-    'search'         => $search,
-    'room_type'      => $room_type,
-    'tenant_status'  => $tenant_status,
+    'search' => $search,
+    'room_type' => $room_type,
+    'tenant_status' => $tenant_status,
     'payment_status' => $payment_status,
-    'limit'          => $perPage,
-    'offset'         => $offset,
-    'sort_by'        => $sort_by,
-    'sort_order'     => $sort_order,
+    'tenant_id' => $tenantId,
+    'limit' => $perPage + 1,
+    'offset' => ($page - 1) * $perPage,
+    'sort_by' => $sort_by,
+    'sort_order' => $sort_order,
 ];
 
 $tenants = getFilteredTenants($pdo, $admin_id, $params);
+$hasNext = count($tenants) > $perPage;
+if ($hasNext) {
+    $tenants = array_slice($tenants, 0, $perPage);
+}
 
 $roomTypes = roomTypesForAdmin($pdo, $admin_id);
-$tenantStatusesList = tenantStatuses();
 $paymentStatusesList = paymentStatuses();
+$paymentActionQuery = array_filter([
+    'q' => $search,
+    'room_type' => $room_type,
+    'tenant_status' => 'active',
+    'payment_status' => $payment_status,
+    'tenant_id' => $tenantId > 0 ? $tenantId : '',
+    'page' => $page,
+    'sort_by' => $sort_by,
+    'sort_order' => $sort_order,
+], static fn($value): bool => $value !== '' && $value !== null);
 
-function chip(string $label, string $tone): string
-{
-    $map = [
-        'slate'  => 'bg-slate-100 text-slate-700 ring-slate-200',
-        'red'    => 'bg-red-50 text-red-700 ring-red-200',
-        'green'  => 'bg-emerald-50 text-emerald-700 ring-emerald-200',
-        'amber'  => 'bg-amber-50 text-amber-700 ring-amber-200',
-        'blue'   => 'bg-sky-50 text-sky-700 ring-sky-200',
-    ];
-    $cls = $map[$tone] ?? $map['slate'];
-    return '<span class="inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ring-inset ' . $cls . '">' . e($label) . '</span>';
-}
+$sortAria = static function (string $column) use ($sort_by, $sort_order): string {
+    if ($sort_by !== $column) {
+        return 'none';
+    }
+    return $sort_order === 'DESC' ? 'descending' : 'ascending';
+};
+
 $active = 'payments';
-
 ?>
 <!doctype html>
 <html lang="en">
@@ -162,105 +220,92 @@ $active = 'payments';
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Payments • Dashboard</title>
-
-  <!-- ✅ NO CDN: use compiled Tailwind -->
-   <link rel="stylesheet" href="assets/css/tailwind.css">
-
+  <link rel="stylesheet" href="assets/css/tailwind.css">
+</head>
 
 <body class="min-h-screen bg-slate-50 text-slate-900">
+  <?php require __DIR__ . '/partials/navbar.php'; ?>
 
-  <?php
-  // ✅ Your navbar partial (put the correct path you use in your system)
-  // If your partial is somewhere else, just adjust this require path.
-  $navPath = __DIR__ . '/partials/navbar.php';
-  if (is_file($navPath)) require $navPath;
-  ?>
-
-  <main class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-6">
-
-    <!-- Header -->
+  <main class="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
     <div class="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
       <div>
-        <h1 class="text-2xl font-bold tracking-tight">Payments Dashboard</h1>
+        <h1 class="font-alt text-2xl font-bold tracking-tight">Payments Dashboard</h1>
         <p class="mt-1 text-sm text-slate-600">
-          Search tenants, view outstanding balances, and record payments.
+          Search active tenants, review balances, and record rent payments.
         </p>
       </div>
 
       <div class="flex flex-wrap items-center gap-2">
         <a href="payments_history.php"
-           class="inline-flex items-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">
+           class="inline-flex min-h-11 items-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">
           Payments History
         </a>
-
         <a href="reports.php"
-           class="inline-flex items-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">
+           class="inline-flex min-h-11 items-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">
           Reports
         </a>
       </div>
     </div>
 
-    <!-- Alerts -->
     <?php if ($success): ?>
-      <div class="mb-5 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+      <div class="mb-5 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900" role="status">
         <?= e($success) ?>
       </div>
     <?php endif; ?>
 
     <?php if ($error): ?>
-      <div class="mb-5 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900">
+      <div class="mb-5 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900" role="alert">
         <?= e($error) ?>
       </div>
     <?php endif; ?>
 
-    <!-- Filters card -->
-    <div class="mb-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+    <form id="paymentFilters" method="get" class="mb-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <?php if ($tenantId > 0): ?>
+        <input type="hidden" name="tenant_id" value="<?= (int)$tenantId ?>">
+      <?php endif; ?>
       <div class="grid grid-cols-1 gap-3 md:grid-cols-4">
         <div>
-          <label class="mb-1 block text-xs font-semibold text-slate-600">Search</label>
+          <label for="search" class="mb-1 block text-xs font-semibold text-slate-600">Search</label>
           <input
             id="search"
+            name="q"
             value="<?= e($search) ?>"
             placeholder="Search tenant..."
-            oninput="loadTenants(1)"
-            class="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-400"
-          />
+            autocomplete="off"
+            class="min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-slate-500 focus:ring-2 focus:ring-slate-200"
+          >
         </div>
 
         <div>
-          <label class="mb-1 block text-xs font-semibold text-slate-600">Room type</label>
-          <select id="room_type" onchange="loadTenants(1)"
-                  class="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-400">
-            <option value="">All Room Types</option>
-            <?php foreach ($roomTypes as $rt): ?>
-              <option value="<?= e($rt) ?>" <?= $rt === $room_type ? 'selected' : '' ?>>
-                <?= e($rt) ?>
+          <label for="room_type" class="mb-1 block text-xs font-semibold text-slate-600">Room type</label>
+          <select id="room_type" name="room_type"
+                  class="min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-slate-500 focus:ring-2 focus:ring-slate-200">
+            <option value="">All room types</option>
+            <?php foreach ($roomTypes as $roomTypeOption): ?>
+              <option value="<?= e($roomTypeOption) ?>" <?= $roomTypeOption === $room_type ? 'selected' : '' ?>>
+                <?= e($roomTypeOption) ?>
               </option>
             <?php endforeach; ?>
           </select>
         </div>
 
         <div>
-          <label class="mb-1 block text-xs font-semibold text-slate-600">Tenant status</label>
-          <select id="tenant_status" onchange="loadTenants(1)"
-                  class="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-400">
-            <option value="">All Tenants</option>
-            <?php foreach ($tenantStatusesList as $ts): ?>
-              <option value="<?= e($ts) ?>" <?= $ts === $tenant_status ? 'selected' : '' ?>>
-                <?= e($ts) ?>
-              </option>
-            <?php endforeach; ?>
+          <label for="tenant_status" class="mb-1 block text-xs font-semibold text-slate-600">Tenant roster</label>
+          <select id="tenant_status" name="tenant_status" aria-describedby="tenant-status-help"
+                  class="min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-slate-500 focus:ring-2 focus:ring-slate-200">
+            <option value="active" selected>Active tenants only</option>
           </select>
+          <p id="tenant-status-help" class="mt-1 text-xs text-slate-500">Exited tenants remain in payment history.</p>
         </div>
 
         <div>
-          <label class="mb-1 block text-xs font-semibold text-slate-600">Payment status</label>
-          <select id="payment_status" onchange="loadTenants(1)"
-                  class="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-400">
-            <option value="">All Payments</option>
-            <?php foreach ($paymentStatusesList as $ps): ?>
-              <option value="<?= e($ps) ?>" <?= $ps === $payment_status ? 'selected' : '' ?>>
-                <?= e($ps) ?>
+          <label for="payment_status" class="mb-1 block text-xs font-semibold text-slate-600">Payment status</label>
+          <select id="payment_status" name="payment_status"
+                  class="min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-slate-500 focus:ring-2 focus:ring-slate-200">
+            <option value="">All payment statuses</option>
+            <?php foreach ($paymentStatusesList as $statusOption): ?>
+              <option value="<?= e($statusOption) ?>" <?= $statusOption === $payment_status ? 'selected' : '' ?>>
+                <?= e(ucfirst($statusOption)) ?>
               </option>
             <?php endforeach; ?>
           </select>
@@ -268,198 +313,227 @@ $active = 'payments';
       </div>
 
       <div class="mt-3 flex flex-wrap items-center justify-between gap-2">
-        <div class="text-xs text-slate-500">
-          Showing up to <span class="font-semibold"><?= (int)$perPage ?></span> tenants per page
-        </div>
-        <button type="button"
-                onclick="loadTenants(1)"
-                class="inline-flex items-center rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">
-          Apply
+        <p class="text-xs text-slate-500">
+          Active roster · <span class="font-semibold">20</span> tenants per page · Search updates as you type.
+        </p>
+        <button type="submit" id="applyPaymentFilters"
+                class="inline-flex min-h-11 items-center justify-center rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900">
+          Apply filters
         </button>
       </div>
-    </div>
+    </form>
 
-    <!-- Table card -->
-    <div class="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+    <section class="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm" aria-labelledby="payment-roster-heading">
+      <div class="flex flex-col gap-1 border-b border-slate-200 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h2 id="payment-roster-heading" class="font-alt text-lg font-bold">Active tenant payment roster</h2>
+          <p class="text-sm text-slate-600">Exited tenants are excluded from payment actions.</p>
+        </div>
+        <div id="paymentLoadingStatus" class="text-xs text-slate-500" role="status" aria-live="polite"></div>
+      </div>
+
       <div class="overflow-x-auto">
-        <table class="min-w-full text-sm" id="tenant-table">
+        <table id="tenant-table" class="min-w-[1120px] w-full text-sm">
+          <caption class="sr-only">Active tenants and their payment balances</caption>
           <thead class="bg-slate-50 text-slate-600">
             <tr>
-              <th class="px-4 py-3 text-left font-semibold cursor-pointer select-none" onclick="sortColumn('full_name')">
-                Tenant
+              <th scope="col" data-sort-header="full_name" aria-sort="<?= e($sortAria('full_name')) ?>" class="px-4 py-3 text-left font-semibold">
+                <button type="button" data-sort="full_name" class="inline-flex min-h-11 items-center rounded-lg text-left hover:text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900">
+                  Tenant <span aria-hidden="true" class="ml-1 text-slate-400">↕</span>
+                </button>
               </th>
-              <th class="px-4 py-3 text-left font-semibold cursor-pointer select-none" onclick="sortColumn('room_number')">
-                Room
+              <th scope="col" data-sort-header="room_number" aria-sort="<?= e($sortAria('room_number')) ?>" class="px-4 py-3 text-left font-semibold">
+                <button type="button" data-sort="room_number" class="inline-flex min-h-11 items-center rounded-lg text-left hover:text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900">
+                  Room <span aria-hidden="true" class="ml-1 text-slate-400">↕</span>
+                </button>
               </th>
-              <th class="px-4 py-3 text-left font-semibold cursor-pointer select-none" onclick="sortColumn('rent_due_date')">
-                Due date
+              <th scope="col" data-sort-header="rent_due_date" aria-sort="<?= e($sortAria('rent_due_date')) ?>" class="px-4 py-3 text-left font-semibold">
+                <button type="button" data-sort="rent_due_date" class="inline-flex min-h-11 items-center rounded-lg text-left hover:text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900">
+                  Due date <span aria-hidden="true" class="ml-1 text-slate-400">↕</span>
+                </button>
               </th>
-              <th class="px-4 py-3 text-left font-semibold cursor-pointer select-none" onclick="sortColumn('monthly_rent_effective')">
-                Current rent
+              <th scope="col" data-sort-header="monthly_rent_effective" aria-sort="<?= e($sortAria('monthly_rent_effective')) ?>" class="px-4 py-3 text-left font-semibold">
+                <button type="button" data-sort="monthly_rent_effective" class="inline-flex min-h-11 items-center rounded-lg text-left hover:text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900">
+                  Current rent <span aria-hidden="true" class="ml-1 text-slate-400">↕</span>
+                </button>
               </th>
-              <th class="px-4 py-3 text-left font-semibold cursor-pointer select-none" onclick="sortColumn('outstanding_balance')">
-                Outstanding
+              <th scope="col" data-sort-header="outstanding_balance" aria-sort="<?= e($sortAria('outstanding_balance')) ?>" class="px-4 py-3 text-left font-semibold">
+                <button type="button" data-sort="outstanding_balance" class="inline-flex min-h-11 items-center rounded-lg text-left hover:text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900">
+                  Outstanding <span aria-hidden="true" class="ml-1 text-slate-400">↕</span>
+                </button>
               </th>
-              <th class="px-4 py-3 text-left font-semibold">
-                Receive payment
-              </th>
+              <th scope="col" class="px-4 py-3 text-left font-semibold">Receive payment</th>
             </tr>
           </thead>
-
-          <tbody class="divide-y divide-slate-100">
-          <?php if (!$tenants): ?>
-            <tr>
-              <td colspan="6" class="px-4 py-6">
-                <div class="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-4 text-sm text-slate-700">
-                  No tenants found for your account (admin_id=<?= (int)$admin_id ?>) or current filters.
-                </div>
-              </td>
-            </tr>
-          <?php endif; ?>
-
-          <?php foreach ($tenants as $t): ?>
-            <?php
-              $dueRaw = (string)($t['rent_due_date'] ?? '');
-              $isOverdue = ($dueRaw !== '' && strtotime($dueRaw) !== false && strtotime($dueRaw) < strtotime(date('Y-m-d')));
-
-              $out = (float)($t['outstanding_balance'] ?? 0);
-              $rent = (float)($t['monthly_rent_effective'] ?? 0);
-
-              // Simple status chip based on outstanding (feel free to replace with real status field if you have it)
-              if ($out <= 0.00001) {
-                  $payChip = chip('Paid', 'green');
-              } elseif ($out < $rent && $rent > 0) {
-                  $payChip = chip('Partial', 'amber');
-              } else {
-                  $payChip = chip('Unpaid', 'red');
-              }
-            ?>
-            <tr class="hover:bg-slate-50">
-              <td class="px-4 py-3">
-                <div class="font-semibold text-slate-900"><?= e($t['full_name'] ?? '') ?></div>
-                <div class="mt-1 text-xs text-slate-500">
-                  <?= $payChip ?>
-                </div>
-              </td>
-
-              <td class="px-4 py-3 text-slate-700">
-                <?= e($t['room_number'] ?? '-') ?>
-              </td>
-
-              <td class="px-4 py-3">
-                <div class="<?= $isOverdue ? 'text-red-700 font-semibold' : 'text-slate-700' ?>">
-                  <?= e(humanDate($dueRaw)) ?>
-                </div>
-                <?php if ($isOverdue): ?>
-                  <div class="mt-1 text-xs text-red-600">Overdue</div>
-                <?php endif; ?>
-              </td>
-
-              <td class="px-4 py-3 text-slate-700">
-                <?= number_format($rent, 0) ?>
-              </td>
-
-              <td class="px-4 py-3">
-                <div class="font-semibold <?= $out > 0 ? 'text-slate-900' : 'text-emerald-700' ?>">
-                  <?= number_format($out, 0) ?>
-                </div>
-              </td>
-
-              <td class="px-4 py-3">
-                <form method="post" class="flex flex-col gap-2 md:flex-row md:items-center">
-                  <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>">
-                  <input type="hidden" name="tenant_id" value="<?= (int)($t['id'] ?? 0) ?>">
-
-                  <input type="number" name="amount" required placeholder="Amount"
-                         class="w-full md:w-32 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-400">
-
-                  <input type="date" name="payment_date" value="<?= e(date('Y-m-d')) ?>"
-                         class="w-full md:w-44 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-400">
-
-                  <select name="method"
-                          class="w-full md:w-32 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-400">
-                    <option value="cash">Cash</option>
-                    <option value="mobile">Mobile</option>
-                    <option value="bank">Bank</option>
-                  </select>
-
-                  <button name="receive_payment"
-                          class="inline-flex items-center justify-center rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">
-                    Pay
-                  </button>
-                </form>
-              </td>
-            </tr>
-          <?php endforeach; ?>
+          <tbody id="tenant-table-body" class="divide-y divide-slate-100" aria-live="polite">
+            <?php require __DIR__ . '/partials/payment_tenant_rows.php'; ?>
           </tbody>
         </table>
       </div>
 
-      <!-- Pagination footer -->
-      <div class="flex items-center justify-between gap-2 border-t border-slate-200 px-4 py-3">
-        <button
-          type="button"
-          onclick="loadTenants(currentPage - 1)"
-          <?= $page <= 1 ? 'disabled' : '' ?>
-          class="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-50 disabled:hover:bg-white"
-        >
-          Prev
-        </button>
-
-        <div class="text-sm text-slate-600">
-          Page <span class="font-semibold"><?= (int)$page ?></span>
+      <div class="flex flex-col gap-3 border-t border-slate-200 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+        <p class="text-sm text-slate-600">Page <span id="currentPageLabel" class="font-semibold"><?= (int)$page ?></span></p>
+        <div class="flex items-center gap-2">
+          <button id="previousPage" type="button" <?= $page <= 1 ? 'disabled' : '' ?>
+                  class="inline-flex min-h-11 items-center justify-center rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 transition hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900 disabled:cursor-not-allowed disabled:opacity-50">
+            Previous
+          </button>
+          <button id="nextPage" type="button" <?= !$hasNext ? 'disabled' : '' ?>
+                  class="inline-flex min-h-11 items-center justify-center rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 transition hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900 disabled:cursor-not-allowed disabled:opacity-50">
+            Next
+          </button>
         </div>
-
-        <button
-          type="button"
-          onclick="loadTenants(currentPage + 1)"
-          class="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50"
-        >
-          Next
-        </button>
       </div>
-    </div>
-
+    </section>
   </main>
 
-<script>
-let currentPage = <?= (int)$page ?>;
-let sortBy = '<?= e($sort_by) ?>';
-let sortOrder = '<?= e($sort_order) ?>';
+  <script>
+    (() => {
+      const filterForm = document.getElementById('paymentFilters');
+      const searchInput = document.getElementById('search');
+      const roomTypeInput = document.getElementById('room_type');
+      const paymentStatusInput = document.getElementById('payment_status');
+      const tenantTableBody = document.getElementById('tenant-table-body');
+      const previousPageButton = document.getElementById('previousPage');
+      const nextPageButton = document.getElementById('nextPage');
+      const currentPageLabel = document.getElementById('currentPageLabel');
+      const loadingStatus = document.getElementById('paymentLoadingStatus');
 
-function loadTenants(page = 1) {
-  if (page < 1) page = 1;
-  currentPage = page;
+      let currentPage = <?= (int)$page ?>;
+      let sortBy = <?= json_encode($sort_by, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+      let sortOrder = <?= json_encode($sort_order) ?>;
+      const selectedTenantId = <?= (int)$tenantId ?>;
+      let hasNext = <?= $hasNext ? 'true' : 'false' ?>;
+      let requestController = null;
+      let requestSequence = 0;
+      let searchTimer = null;
 
-  const params = new URLSearchParams({
-    q: document.getElementById('search').value,
-    room_type: document.getElementById('room_type').value,
-    tenant_status: document.getElementById('tenant_status').value,
-    payment_status: document.getElementById('payment_status').value,
-    page: currentPage,
-    sort_by: sortBy,
-    sort_order: sortOrder
-  });
+      const buildParams = (page) => new URLSearchParams({
+        q: searchInput.value,
+        room_type: roomTypeInput.value,
+        tenant_status: 'active',
+        payment_status: paymentStatusInput.value,
+        tenant_id: selectedTenantId > 0 ? String(selectedTenantId) : '',
+        page: String(page),
+        sort_by: sortBy,
+        sort_order: sortOrder
+      });
 
-  fetch('payments_ajax.php?' + params.toString(), {
-    headers: { 'X-Requested-With': 'XMLHttpRequest' }
-  })
-  .then(r => r.text())
-  .then(html => {
-    // payments_ajax.php must return <table> or <tbody> consistent HTML.
-    document.getElementById('tenant-table').innerHTML = html;
-  })
-  .catch(() => {
-    // silently ignore
-  });
-}
+      const updateAddress = (params) => {
+        const url = new URL(window.location.href);
+        url.search = params.toString();
+        window.history.replaceState({}, '', url);
+      };
 
-function sortColumn(col) {
-  sortOrder = (sortBy === col && sortOrder === 'ASC') ? 'DESC' : 'ASC';
-  sortBy = col;
-  loadTenants(currentPage);
-}
-</script>
+      const updateControls = () => {
+        currentPageLabel.textContent = String(currentPage);
+        previousPageButton.disabled = currentPage <= 1;
+        nextPageButton.disabled = !hasNext;
 
+        document.querySelectorAll('[data-sort-header]').forEach((header) => {
+          const column = header.getAttribute('data-sort-header');
+          header.setAttribute('aria-sort', column === sortBy
+            ? (sortOrder === 'DESC' ? 'descending' : 'ascending')
+            : 'none');
+        });
+      };
+
+      const showRequestError = () => {
+        tenantTableBody.innerHTML = '<tr><td colspan="6" class="px-4 py-6"><div class="rounded-2xl border border-red-200 bg-red-50 px-4 py-4 text-sm text-red-800">Unable to refresh the tenant roster. Please try again.</div></td></tr>';
+      };
+
+      const loadTenants = async (page = 1, updateUrl = true) => {
+        const targetPage = Math.max(1, page);
+        const params = buildParams(targetPage);
+        const sequence = ++requestSequence;
+
+        if (requestController) {
+          requestController.abort();
+        }
+        requestController = new AbortController();
+        tenantTableBody.setAttribute('aria-busy', 'true');
+        loadingStatus.textContent = 'Refreshing…';
+
+        try {
+          const response = await fetch('payments_ajax.php?' + params.toString(), {
+            headers: { 'X-Requested-With': 'XMLHttpRequest' },
+            credentials: 'same-origin',
+            signal: requestController.signal
+          });
+
+          if (!response.ok) {
+            throw new Error('Payment roster request failed.');
+          }
+
+          const html = await response.text();
+          if (sequence !== requestSequence) {
+            return;
+          }
+
+          tenantTableBody.innerHTML = html;
+          currentPage = Number(response.headers.get('X-Page')) || targetPage;
+          hasNext = response.headers.get('X-Has-Next') === '1';
+          updateControls();
+          if (updateUrl) {
+            updateAddress(params);
+          }
+        } catch (error) {
+          if (error && error.name === 'AbortError') {
+            return;
+          }
+          showRequestError();
+        } finally {
+          if (sequence === requestSequence) {
+            tenantTableBody.removeAttribute('aria-busy');
+            loadingStatus.textContent = '';
+          }
+        }
+      };
+
+      const sortColumn = (column) => {
+        sortOrder = sortBy === column && sortOrder === 'ASC' ? 'DESC' : 'ASC';
+        sortBy = column;
+        loadTenants(currentPage);
+      };
+
+      filterForm.addEventListener('submit', (event) => {
+        event.preventDefault();
+        loadTenants(1);
+      });
+
+      roomTypeInput.addEventListener('change', () => loadTenants(1));
+      paymentStatusInput.addEventListener('change', () => loadTenants(1));
+      searchInput.addEventListener('input', () => {
+        window.clearTimeout(searchTimer);
+        searchTimer = window.setTimeout(() => loadTenants(1), 250);
+      });
+
+      document.querySelectorAll('[data-sort]').forEach((button) => {
+        button.addEventListener('click', () => sortColumn(button.getAttribute('data-sort')));
+      });
+
+      previousPageButton.addEventListener('click', () => {
+        if (currentPage > 1) loadTenants(currentPage - 1);
+      });
+      nextPageButton.addEventListener('click', () => {
+        if (hasNext) loadTenants(currentPage + 1);
+      });
+
+      tenantTableBody.addEventListener('submit', (event) => {
+        const form = event.target.closest('[data-payment-form]');
+        if (!form) return;
+
+        const button = form.querySelector('[data-payment-submit]');
+        if (button) {
+          button.disabled = true;
+          button.textContent = button.dataset.submittingLabel || 'Saving…';
+        }
+      });
+
+      window.loadTenants = loadTenants;
+      window.sortColumn = sortColumn;
+      updateControls();
+    })();
+  </script>
 </body>
 </html>

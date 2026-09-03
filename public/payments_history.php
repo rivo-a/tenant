@@ -53,7 +53,7 @@ function chip(string $label, string $tone): string
 $roomTypes = $pdo->query("SELECT id, name FROM room_types ORDER BY name")->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
 $tenantsStmt = $pdo->prepare("
-    SELECT id, full_name
+    SELECT id, full_name, status
     FROM tenants
     WHERE admin_id = ?
     ORDER BY full_name
@@ -62,8 +62,12 @@ $tenantsStmt->execute([$admin_id]);
 $tenants = $tenantsStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
 /* ================= FILTER SQL ================= */
-$where  = ['t.admin_id = :admin'];
-$params = ['admin' => $admin_id];
+$where  = ['t.admin_id = :admin', 'p.admin_id = :payment_admin'];
+$params = [
+    'admin' => $admin_id,
+    'payment_admin' => $admin_id,
+    'payment_admin_status' => $admin_id,
+];
 
 if ($search !== '') {
     $where[] = '(t.full_name LIKE :q OR r.room_number LIKE :q)';
@@ -88,7 +92,9 @@ $countStmt = $pdo->prepare("
     LEFT JOIN rooms r ON t.room_id = r.id
     $whereSQL
 ");
-$countStmt->execute($params);
+$countParams = $params;
+unset($countParams['payment_admin_status']);
+$countStmt->execute($countParams);
 
 $totalRows  = (int)$countStmt->fetchColumn();
 $totalPages = max(1, (int)ceil($totalRows / $perPage));
@@ -103,19 +109,35 @@ $dataStmt = $pdo->prepare("
         p.payment_date,
         p.payment_month,
         p.amount,
+        p.method,
+        p.note,
         t.full_name,
+        t.status AS tenant_status,
+        t.exit_date,
         t.rent_due_date,
         r.room_number,
         rt.name AS room_type,
+        COALESCE(
+            NULLIF(t.monthly_rent, 0),
+            NULLIF(r.monthly_rent, 0),
+            rt.default_monthly_rent,
+            0
+        ) AS effective_rent,
         (
             SELECT
                 CASE
-                    WHEN SUM(p2.amount) >= COALESCE(r.monthly_rent, rt.default_monthly_rent, 0)
+                    WHEN SUM(p2.amount) >= COALESCE(
+                        NULLIF(t.monthly_rent, 0),
+                        NULLIF(r.monthly_rent, 0),
+                        rt.default_monthly_rent,
+                        0
+                    )
                     THEN 'PAID'
                     ELSE 'PARTIAL'
                 END
             FROM payments p2
             WHERE p2.tenant_id = p.tenant_id
+              AND p2.admin_id = :payment_admin_status
               AND p2.payment_month = p.payment_month
         ) AS month_status
     FROM payments p
@@ -123,7 +145,7 @@ $dataStmt = $pdo->prepare("
     LEFT JOIN rooms r ON t.room_id = r.id
     LEFT JOIN room_types rt ON r.room_type_id = rt.id
     $whereSQL
-    ORDER BY p.payment_date DESC
+    ORDER BY p.payment_date DESC, p.id DESC
     LIMIT $perPage OFFSET $offset
 ");
 $dataStmt->execute($params);
@@ -209,7 +231,7 @@ $active = 'history'; // matches navbar.php key
             <option value="">All Tenants</option>
             <?php foreach ($tenants as $t): ?>
               <option value="<?= e($t['id']) ?>" <?= ((string)$tenantId === (string)$t['id']) ? 'selected' : '' ?>>
-                <?= e($t['full_name']) ?>
+                <?= e($t['full_name']) ?><?= strtolower((string)($t['status'] ?? '')) === 'exited' ? ' (Exited)' : '' ?>
               </option>
             <?php endforeach; ?>
           </select>
@@ -250,10 +272,13 @@ $active = 'history'; // matches navbar.php key
               <th class="px-4 py-3 text-left font-semibold">Date</th>
               <th class="px-4 py-3 text-left font-semibold">Month</th>
               <th class="px-4 py-3 text-left font-semibold">Tenant</th>
+              <th class="px-4 py-3 text-left font-semibold">Tenant status</th>
               <th class="px-4 py-3 text-left font-semibold">Room</th>
               <th class="px-4 py-3 text-left font-semibold">Type</th>
               <th class="px-4 py-3 text-left font-semibold">Amount</th>
-              <th class="px-4 py-3 text-left font-semibold">Status</th>
+              <th class="px-4 py-3 text-left font-semibold">Method</th>
+              <th class="px-4 py-3 text-left font-semibold">Note</th>
+              <th class="px-4 py-3 text-left font-semibold">Month status</th>
               <th class="px-4 py-3 text-left font-semibold">Due date</th>
             </tr>
           </thead>
@@ -261,7 +286,7 @@ $active = 'history'; // matches navbar.php key
           <tbody class="divide-y divide-slate-100">
             <?php if (!$payments): ?>
               <tr>
-                <td colspan="8" class="px-4 py-6">
+                <td colspan="9" class="px-4 py-6">
                   <div class="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-4 text-sm text-slate-700">
                     No payments found for this filter.
                   </div>
@@ -273,6 +298,13 @@ $active = 'history'; // matches navbar.php key
               <?php
                 $status = strtoupper((string)($p['month_status'] ?? 'PARTIAL'));
                 $statusChip = ($status === 'PAID') ? chip('PAID', 'green') : chip('PARTIAL', 'amber');
+                $tenantStatus = strtolower((string)($p['tenant_status'] ?? 'active'));
+                $tenantStatusChip = $tenantStatus === 'exited'
+                    ? chip('Exited', 'slate')
+                    : chip('Active', 'blue');
+                $method = strtolower(trim((string)($p['method'] ?? '')));
+                $methodLabel = $method !== '' ? ucfirst($method) : '—';
+                $note = trim((string)($p['note'] ?? ''));
 
                 $due = (string)($p['rent_due_date'] ?? '');
                 $dueChip = $due
@@ -282,10 +314,18 @@ $active = 'history'; // matches navbar.php key
               <tr class="hover:bg-slate-50">
                 <td class="px-4 py-3"><?= e($p['payment_date'] ?? '') ?></td>
                 <td class="px-4 py-3 font-semibold"><?= e($p['payment_month'] ?? '') ?></td>
-                <td class="px-4 py-3 font-semibold"><?= e($p['full_name'] ?? '') ?></td>
+                <td class="px-4 py-3 font-semibold">
+                  <?= e($p['full_name'] ?? '') ?>
+                  <?php if ($tenantStatus === 'exited' && !empty($p['exit_date'])): ?>
+                    <div class="mt-1 text-xs font-normal text-slate-500">Exited <?= e($p['exit_date']) ?></div>
+                  <?php endif; ?>
+                </td>
+                <td class="px-4 py-3"><?= $tenantStatusChip ?></td>
                 <td class="px-4 py-3"><?= e($p['room_number'] ?? '-') ?></td>
                 <td class="px-4 py-3"><?= e($p['room_type'] ?? '-') ?></td>
                 <td class="px-4 py-3 font-semibold font-alt">UGX <?= e(money($p['amount'] ?? 0)) ?></td>
+                <td class="px-4 py-3"><?= e($methodLabel) ?></td>
+                <td class="max-w-xs px-4 py-3 text-slate-700"><?= e($note !== '' ? $note : '—') ?></td>
                 <td class="px-4 py-3"><?= $statusChip ?></td>
                 <td class="px-4 py-3"><?= $dueChip ?></td>
               </tr>

@@ -1,6 +1,7 @@
 (() => {
   const toggle = document.getElementById('mobileNavToggle');
   const mobileNav = document.getElementById('mobileNav');
+  const desktopMore = document.getElementById('desktopMore');
 
   if (toggle && mobileNav) {
     const setMenuOpen = (isOpen) => {
@@ -26,6 +27,23 @@
       if (event.key === 'Escape' && !mobileNav.classList.contains('hidden')) {
         setMenuOpen(false);
         toggle.focus({ preventScroll: true });
+      }
+    });
+  }
+
+  if (desktopMore) {
+    const summary = desktopMore.querySelector('summary');
+
+    document.addEventListener('click', (event) => {
+      if (desktopMore.open && event.target instanceof Node && !desktopMore.contains(event.target)) {
+        desktopMore.removeAttribute('open');
+      }
+    });
+
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && desktopMore.open) {
+        desktopMore.removeAttribute('open');
+        summary?.focus({ preventScroll: true });
       }
     });
   }

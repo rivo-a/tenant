@@ -1,6 +1,7 @@
 {
     "require": {
         "mpdf/mpdf": "*",
-        "tecnickcom/tcpdf": "*"
+        "tecnickcom/tcpdf": "*",
+        "vlucas/phpdotenv": "*"
     }
 }

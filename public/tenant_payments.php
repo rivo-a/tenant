@@ -90,7 +90,7 @@ if ($tenantId > 0) {
                 WHERE tenant_id = ?
                   AND admin_id  = ?
                   AND payment_month = ?
-                ORDER BY payment_date
+                ORDER BY created_at DESC
             ");
             $stmt->execute([$tenantId, $adminId, $month]);
             $transactions = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
@@ -105,6 +105,12 @@ if (!function_exists('e')) {
 }
 
 function money($v): string { return number_format((float)$v, 0); }
+
+function format_datetime(?string $dt): string {
+    if (!$dt) return '—';
+    $timestamp = strtotime($dt);
+    return $timestamp ? date('M d, Y h:i A', $timestamp) : e($dt);
+}
 
 function chip(string $label, string $tone): string
 {
@@ -128,13 +134,17 @@ $active = 'tenant_payments';
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Tenant Payment History</title>
 
-  <!-- Fonts (Inter + IBM Plex Sans) -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-
-  <!-- ✅ NO CDN: compiled Tailwind -->
   <link rel="stylesheet" href="assets/css/tailwind.css">
+  
+  <style>
+    /* ✅ MODERN AUTO-SCROLL FIX: Prevents sticky navbar from covering the target */
+    .scroll-target {
+      scroll-margin-top: 120px;
+    }
+  </style>
 </head>
 
 <body class="min-h-screen bg-slate-50 text-slate-900">
@@ -155,35 +165,18 @@ $active = 'tenant_payments';
       </div>
 
       <div class="flex items-center gap-2">
-        <a href="payments.php"
-           class="inline-flex items-center rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">
-          Receive Payment
-        </a>
-        <a href="dashboard.php"
-           class="inline-flex items-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">
-          Dashboard
-        </a>
+        <a href="payments.php" class="inline-flex items-center rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">Receive Payment</a>
+        <a href="dashboard.php" class="inline-flex items-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">Dashboard</a>
       </div>
     </div>
 
     <!-- Search + Tenant list -->
     <div class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm mb-6">
       <form method="get" class="flex flex-col gap-2 sm:flex-row sm:items-center">
-        <input
-          name="q"
-          value="<?= e($q) ?>"
-          placeholder="Search name / phone / room..."
-          class="w-full sm:max-w-md rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-400"
-        />
-        <button class="inline-flex items-center justify-center rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">
-          Search
-        </button>
-
+        <input name="q" value="<?= e($q) ?>" placeholder="Search name / phone / room..." class="w-full sm:max-w-md rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-400" />
+        <button class="inline-flex items-center justify-center rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">Search</button>
         <?php if ($q !== ''): ?>
-          <a href="tenant_payments.php"
-             class="inline-flex items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">
-            Clear
-          </a>
+          <a href="tenant_payments.php" class="inline-flex items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">Clear</a>
         <?php endif; ?>
       </form>
 
@@ -198,35 +191,26 @@ $active = 'tenant_payments';
                 <th class="px-4 py-3 text-left font-semibold">Action</th>
               </tr>
             </thead>
-
             <tbody class="divide-y divide-slate-100">
               <?php if (!$tenantList): ?>
                 <tr>
                   <td colspan="4" class="px-4 py-6">
-                    <div class="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-4 text-sm text-slate-700">
-                      No tenants found.
-                    </div>
+                    <div class="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-4 text-sm text-slate-700">No tenants found.</div>
                   </td>
                 </tr>
               <?php endif; ?>
-
+              
               <?php foreach ($tenantList as $t): ?>
-                <tr class="hover:bg-slate-50" id="tenant-row-<?= (int)$t['id'] ?>">
+                <tr class="hover:bg-slate-50 scroll-target" id="tenant-row-<?= (int)$t['id'] ?>">
                   <td class="px-4 py-3 font-semibold"><?= e($t['full_name'] ?? '') ?></td>
                   <td class="px-4 py-3 text-slate-700"><?= e($t['phone'] ?? '') ?></td>
                   <td class="px-4 py-3 text-slate-700"><?= e($t['room_number'] ?? '—') ?></td>
                   <td class="px-4 py-3">
-                    <a
-                      href="?tenant_id=<?= (int)$t['id'] ?>&q=<?= urlencode($q) ?>#tenant-row-<?= (int)$t['id'] ?>"
-                      class="inline-flex items-center rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50"
-                    >
-                      View Payments
-                    </a>
+                    <a href="?tenant_id=<?= (int)$t['id'] ?>&q=<?= urlencode($q) ?>#tenant-row-<?= (int)$t['id'] ?>" class="inline-flex items-center rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">View Payments</a>
                   </td>
                 </tr>
               <?php endforeach; ?>
             </tbody>
-
           </table>
         </div>
       </div>
@@ -237,23 +221,17 @@ $active = 'tenant_payments';
       <div class="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden mb-6">
         <div class="px-4 py-4 border-b border-slate-200 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h2 class="text-lg font-bold font-alt">
-              <?= e($tenant['full_name'] ?? '') ?>
-            </h2>
+            <h2 class="text-lg font-bold font-alt"><?= e($tenant['full_name'] ?? '') ?></h2>
             <div class="mt-1 text-sm text-slate-600">
               Phone: <?= e($tenant['phone'] ?? '') ?>
               <span class="mx-2 text-slate-300">•</span>
               Rent: <span class="font-semibold text-slate-900">UGX <?= e(money($rent)) ?></span> / month
             </div>
           </div>
-
           <?php if ($month && preg_match('/^\d{4}-\d{2}$/', $month)): ?>
             <div class="flex items-center gap-2">
               <?= chip("Month: $month", 'blue') ?>
-              <a href="?tenant_id=<?= (int)$tenantId ?>&q=<?= urlencode($q) ?>"
-                 class="inline-flex items-center rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">
-                Clear month
-              </a>
+              <a href="?tenant_id=<?= (int)$tenantId ?>&q=<?= urlencode($q) ?>" class="inline-flex items-center rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">Clear month</a>
             </div>
           <?php endif; ?>
         </div>
@@ -273,18 +251,16 @@ $active = 'tenant_payments';
               <?php if (!$months): ?>
                 <tr>
                   <td colspan="4" class="px-4 py-6">
-                    <div class="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-4 text-sm text-slate-700">
-                      No payments recorded for this tenant yet.
-                    </div>
+                    <div class="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-4 text-sm text-slate-700">No payments recorded for this tenant yet.</div>
                   </td>
                 </tr>
               <?php endif; ?>
-
+              
               <?php foreach ($months as $m): ?>
                 <?php
                   $paid = (float)($m['total_paid'] ?? 0);
                   $balance = max(0, $rent - $paid);
-
+                  
                   if ($balance <= 0.00001) {
                       $status = chip('PAID', 'green');
                   } elseif ($paid > 0) {
@@ -298,15 +274,12 @@ $active = 'tenant_payments';
                 ?>
                 <tr class="<?= $isActiveMonth ? 'bg-sky-50/60' : 'hover:bg-slate-50' ?>">
                   <td class="px-4 py-3 font-semibold">
-                    <a class="underline decoration-slate-300 hover:decoration-slate-500"
-                       href="?tenant_id=<?= (int)$tenantId ?>&month=<?= e($mth) ?>&q=<?= urlencode($q) ?>">
+                    <a class="underline decoration-slate-300 hover:decoration-slate-500" href="?tenant_id=<?= (int)$tenantId ?>&month=<?= e($mth) ?>&q=<?= urlencode($q) ?>">
                       <?= e($mth) ?>
                     </a>
                   </td>
                   <td class="px-4 py-3">UGX <?= e(money($paid)) ?></td>
-                  <td class="px-4 py-3 font-bold <?= $balance > 0 ? 'text-red-700' : 'text-emerald-700' ?>">
-                    UGX <?= e(money($balance)) ?>
-                  </td>
+                  <td class="px-4 py-3 font-bold <?= $balance > 0 ? 'text-red-700' : 'text-emerald-700' ?>">UGX <?= e(money($balance)) ?></td>
                   <td class="px-4 py-3"><?= $status ?></td>
                 </tr>
               <?php endforeach; ?>
@@ -315,9 +288,9 @@ $active = 'tenant_payments';
         </div>
       </div>
 
-      <!-- Transactions -->
+      <!-- ✅ TRANSACTIONS SECTION (Added ID and scroll-target class) -->
       <?php if ($transactions): ?>
-        <div class="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+        <div id="transactions-section" class="scroll-target rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
           <div class="px-4 py-4 border-b border-slate-200">
             <h3 class="text-lg font-bold font-alt">Transactions for <?= e($month) ?></h3>
             <p class="text-sm text-slate-600">Individual payments recorded in this month.</p>
@@ -337,7 +310,7 @@ $active = 'tenant_payments';
                   <tr class="hover:bg-slate-50">
                     <td class="px-4 py-3"><?= e($tx['payment_date'] ?? '') ?></td>
                     <td class="px-4 py-3 font-semibold">UGX <?= e(money($tx['amount'] ?? 0)) ?></td>
-                    <td class="px-4 py-3 text-slate-700"><?= e($tx['created_at'] ?? '') ?></td>
+                    <td class="px-4 py-3 text-slate-700 font-mono text-xs"><?= format_datetime($tx['created_at'] ?? null) ?></td>
                   </tr>
                 <?php endforeach; ?>
               </tbody>
@@ -349,19 +322,33 @@ $active = 'tenant_payments';
     <?php endif; ?>
 
   </main>
+
+  <!-- ✅ ROBUST AUTO-SCROLL SCRIPT -->
   <script>
-(function () {
-  const id = <?= (int)$tenantId ?>;
-  if (!id) return;
+  document.addEventListener('DOMContentLoaded', function() {
+    // 1. Scroll to selected tenant row if ID exists in URL hash or param
+    const tenantId = <?= (int)$tenantId ?>;
+    if (tenantId > 0) {
+      const el = document.getElementById('tenant-row-' + tenantId);
+      if (el) {
+        setTimeout(() => {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }, 100);
+      }
+    }
 
-  const el = document.getElementById('tenant-row-' + id);
-  if (!el) return;
-
-  // Smooth scroll + leave space for sticky navbar
-  const y = el.getBoundingClientRect().top + window.pageYOffset - 110;
-  window.scrollTo({ top: y, behavior: 'smooth' });
-})();
-</script>
+    // 2. Smooth scroll to transactions if a month is clicked
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.has('month')) {
+      const txSection = document.getElementById('transactions-section');
+      if (txSection) {
+        setTimeout(() => {
+          txSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 150);
+      }
+    }
+  });
+  </script>
 
 </body>
 </html>

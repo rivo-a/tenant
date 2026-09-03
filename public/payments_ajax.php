@@ -6,32 +6,53 @@ require_once __DIR__ . '/tenant_filter.php';
 
 require_login();
 
-$admin_id = (int)$_SESSION['admin_id'];
+$admin_id = current_admin_id();
+if ($admin_id <= 0) {
+    http_response_code(403);
+    exit('Access denied: admin session not found.');
+}
+
+$getString = static function (string $key, string $default = ''): string {
+    $value = $_GET[$key] ?? $default;
+    return is_scalar($value) ? trim((string)$value) : $default;
+};
+
+$page = max(1, (int)$getString('page', '1'));
+$perPage = 20;
 
 $params = [
-    'search' => $_GET['q'] ?? '',
-    'room_type' => $_GET['room_type'] ?? '',
-    'limit' => 20,
-    'offset' => max(0, ((int)($_GET['page'] ?? 1) - 1) * 20)
+    'search' => $getString('q'),
+    'room_type' => $getString('room_type'),
+    'tenant_status' => 'active',
+    'payment_status' => $getString('payment_status'),
+    'tenant_id' => $getString('tenant_id', '0'),
+    'limit' => $perPage + 1,
+    'offset' => ($page - 1) * $perPage,
+    'sort_by' => $getString('sort_by', 'full_name'),
+    'sort_order' => $getString('sort_order', 'ASC'),
 ];
 
-$tenants = getFilteredTenants($pdo, $admin_id, $params);
+$tenants = getFilteredTenants(getDB(), $admin_id, $params);
+$hasNext = count($tenants) > $perPage;
+if ($hasNext) {
+    $tenants = array_slice($tenants, 0, $perPage);
+}
 
-foreach ($tenants as $t):
-?>
-<tr>
-<td><?= htmlspecialchars($t['full_name']) ?></td>
-<td><?= htmlspecialchars($t['room_number'] ?? '-') ?></td>
-<td><?= number_format((float)$t['monthly_rent_effective']) ?></td>
-<td><?= number_format((float)$t['outstanding_balance']) ?></td>
-<td>
-<form method="post">
-<input type="hidden" name="csrf" value="<?= csrf_token() ?>">
-<input type="hidden" name="tenant_id" value="<?= (int)$t['id'] ?>">
-<input type="number" name="amount" required>
-<input type="date" name="payment_date" value="<?= date('Y-m-d') ?>">
-<button name="receive_payment">Pay</button>
-</form>
-</td>
-</tr>
-<?php endforeach; ?>
+$paymentActionQuery = array_filter([
+    'q' => $params['search'],
+    'room_type' => $params['room_type'],
+    'tenant_status' => 'active',
+    'payment_status' => $params['payment_status'],
+    'tenant_id' => $params['tenant_id'],
+    'page' => $page,
+    'sort_by' => $params['sort_by'],
+    'sort_order' => strtoupper($params['sort_order']) === 'DESC' ? 'DESC' : 'ASC',
+], static fn($value): bool => $value !== '' && $value !== null);
+
+header('Content-Type: text/html; charset=UTF-8');
+header('X-Page: ' . $page);
+header('X-Has-Next: ' . ($hasNext ? '1' : '0'));
+header('X-Has-Previous: ' . ($page > 1 ? '1' : '0'));
+
+$paymentFormData = [];
+require __DIR__ . '/partials/payment_tenant_rows.php';
