@@ -1,12 +1,12 @@
 @import "tailwindcss";
 
 /* Scan all server-rendered templates and the small vanilla-JS layer. */
-@source "../public/**/*.php";
-@source "../views/**/*.php";
-@source "../controllers/**/*.php";
-@source "../core/**/*.php";
-@source "../services/**/*.php";
-@source "../public/**/*.js";
+@source "../../public/**/*.php";
+@source "../../views/**/*.php";
+@source "../../controllers/**/*.php";
+@source "../../core/**/*.php";
+@source "../../services/**/*.php";
+@source "../../public/**/*.js";
 
 /* Shared typography tokens used by the dashboard surfaces. */
 @theme {
