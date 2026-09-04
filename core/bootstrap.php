@@ -3,6 +3,20 @@ declare(strict_types=1);
 
 define('BASE_PATH', dirname(__DIR__));
 
+/* Load .env values once for every web entry point. */
+$composerAutoload = BASE_PATH . '/vendor/autoload.php';
+if (is_file($composerAutoload)) {
+    require_once $composerAutoload;
+}
+
+if (class_exists('Dotenv\\Dotenv')) {
+    try {
+        \Dotenv\Dotenv::createImmutable(BASE_PATH)->safeLoad();
+    } catch (Throwable $ignored) {
+        // Missing or malformed optional environment values are handled by callers.
+    }
+}
+
 /*
 |--------------------------------------------------------------------------
 | Application Bootstrap (Hardened)

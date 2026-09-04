@@ -128,31 +128,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['receive_payment'])) {
         );
 
         $successMessage = (($result['status'] ?? '') === 'paid')
-            ? 'Payment recorded. Month fully paid.'
-            : 'Partial payment recorded.';
+            ? 'Payment recorded and queued for verification. Month fully paid.'
+            : 'Payment recorded and queued for verification. Partial payment recorded.';
 
         if (function_exists('logAudit')) {
-          function getTenantFullName(PDO $pdo, int $tenantId): ?string
-{
-    $stmt = $pdo->prepare("
-        SELECT full_name
-        FROM tenants
-        WHERE id = :id
-        LIMIT 1
-    ");
-
-    $stmt->execute(['id' => $tenantId]);
-
-    $name = $stmt->fetchColumn();
-
-    return $name !== false ? (string) $name : null;
-}
             try {
-              $name = getTenantFullName($pdo,$paymentFormData['tenant_id']);
+                $tenantNameStmt = $pdo->prepare('SELECT full_name FROM tenants WHERE id = :id LIMIT 1');
+                $tenantNameStmt->execute([':id' => $paymentFormData['tenant_id']]);
+                $tenantName = (string)($tenantNameStmt->fetchColumn() ?: 'Tenant');
                 logAudit(
                     $admin_id,
                     'PAYMENT_RECEIVED',
-                    "Tenant {$name} paid " . number_format($amount, 2) . " on {$date} via {$method}."
+                    "Tenant {$tenantName} payment of " . number_format($amount, 2) . " on {$date} via {$method} is pending verification."
                 );
             } catch (Throwable $ignored) {
                 // Audit failure must not undo a committed payment.
@@ -255,6 +242,10 @@ $active = 'payments';
         <a href="payments_history.php"
            class="inline-flex min-h-11 items-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">
           Payments History
+        </a>
+        <a href="payment_verification.php"
+           class="inline-flex min-h-11 items-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">
+          Verification queue
         </a>
         <a href="reports.php"
            class="inline-flex min-h-11 items-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">
