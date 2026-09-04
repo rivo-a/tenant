@@ -322,9 +322,9 @@ $activeNav = 'tenants';
                        href="remind.php?id=<?= $tenantIdRow ?>">
                       View
                     </a>
-                    <a
+                    <a class="inline-flex items-center rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50"
     href="remind.php?tenant_id=<?= (int)$tenantIdRow ?>"
-    class="..."
+    
 >
     Remind
 </a>

@@ -60,8 +60,20 @@ require_once __DIR__ . '/permissions.php';          // requireRole(), requireCar
 if (!function_exists('humanDate')) {
     function humanDate(?string $date): string
     {
-        if (!$date) return '—';
-        return date('d M Y', strtotime($date));
+        if (!$date) {
+            return '—';
+        }
+
+        $timestamp = strtotime($date);
+
+        if ($timestamp === false) {
+            return '—';
+        }
+
+        // Add Uganda's UTC+3 offset
+        $timestamp += (3 * 60 * 60);
+
+        return date('d M Y', $timestamp);
     }
 }
 

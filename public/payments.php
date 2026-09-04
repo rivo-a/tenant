@@ -132,11 +132,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['receive_payment'])) {
             : 'Partial payment recorded.';
 
         if (function_exists('logAudit')) {
+          function getTenantFullName(PDO $pdo, int $tenantId): ?string
+{
+    $stmt = $pdo->prepare("
+        SELECT full_name
+        FROM tenants
+        WHERE id = :id
+        LIMIT 1
+    ");
+
+    $stmt->execute(['id' => $tenantId]);
+
+    $name = $stmt->fetchColumn();
+
+    return $name !== false ? (string) $name : null;
+}
             try {
+              $name = getTenantFullName($pdo,$paymentFormData['tenant_id']);
                 logAudit(
                     $admin_id,
                     'PAYMENT_RECEIVED',
-                    "Tenant #{$paymentFormData['tenant_id']} paid " . number_format($amount, 2) . " on {$date} via {$method}."
+                    "Tenant {$name} paid " . number_format($amount, 2) . " on {$date} via {$method}."
                 );
             } catch (Throwable $ignored) {
                 // Audit failure must not undo a committed payment.

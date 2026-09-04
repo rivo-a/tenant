@@ -229,9 +229,9 @@ $active = 'audit';
 
           <?php foreach ($logs as $log): ?>
             <?php
-            $recordedAt = (string)($log['created_at'] ?? '');
+            $recordedAt = (string)($log['created_at']  ?? '');
             $recordedLabel = $recordedAt !== '' && strtotime($recordedAt) !== false
-                ? date('d M Y · H:i', strtotime($recordedAt))
+                ? date('d M Y · H:i', strtotime($recordedAt) + 10800)
                 : '—';
             ?>
             <tr class="align-top hover:bg-slate-50">
