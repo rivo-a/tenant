@@ -109,7 +109,7 @@ function money($v): string { return number_format((float)$v, 0); }
 function format_datetime(?string $dt): string {
     if (!$dt) return '—';
     $timestamp = strtotime($dt);
-    return $timestamp ? date('M d, Y h:i A', $timestamp) : e($dt);
+    return $timestamp ? date('M d, Y h:i A', $timestamp + 10800) : e($dt);
 }
 
 function chip(string $label, string $tone): string

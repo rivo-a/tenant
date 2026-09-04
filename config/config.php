@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 define('BASE_URL', '/tenant-system/public');
-
+date_default_timezone_set ('Africa/Kampala');
 /*
 |--------------------------------------------------------------------------
 | Database Configuration (SQLite)

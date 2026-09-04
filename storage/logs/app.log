@@ -99,3 +99,30 @@ LOG READY
 [2026-08-28 17:24:39] FATAL: Cannot declare class PaymentService, because the name is already in use in C:\xampp\htdocs\tenant-system\services\PaymentService.php on line 139
 [2026-08-28 17:43:07] FATAL: Cannot declare class PaymentService, because the name is already in use in C:\xampp\htdocs\tenant-system\services\PaymentService.php on line 139
 [2026-09-03 09:42:30] EXCEPTION: Class "Dotenv\Dotenv" not found in C:\xampp\htdocs\tenant-system\public\remind.php on line 45
+[2026-09-04 01:43:35] ERROR: Undefined array key "full_name" in C:\xampp\htdocs\tenant-system\public\payments.php on line 139
+[2026-09-04 03:55:06] EXCEPTION: strtotime(): Argument #1 ($datetime) must be of type string, int given in C:\xampp\htdocs\tenant-system\public\audit_logs.php on line 233
+[2026-09-04 03:55:59] ERROR: A non-numeric value encountered in C:\xampp\htdocs\tenant-system\public\audit_logs.php on line 232
+[2026-09-04 03:55:59] ERROR: A non-numeric value encountered in C:\xampp\htdocs\tenant-system\public\audit_logs.php on line 232
+[2026-09-04 03:55:59] ERROR: A non-numeric value encountered in C:\xampp\htdocs\tenant-system\public\audit_logs.php on line 232
+[2026-09-04 03:55:59] ERROR: A non-numeric value encountered in C:\xampp\htdocs\tenant-system\public\audit_logs.php on line 232
+[2026-09-04 03:55:59] ERROR: A non-numeric value encountered in C:\xampp\htdocs\tenant-system\public\audit_logs.php on line 232
+[2026-09-04 03:55:59] ERROR: A non-numeric value encountered in C:\xampp\htdocs\tenant-system\public\audit_logs.php on line 232
+[2026-09-04 03:55:59] ERROR: A non-numeric value encountered in C:\xampp\htdocs\tenant-system\public\audit_logs.php on line 232
+[2026-09-04 03:55:59] ERROR: A non-numeric value encountered in C:\xampp\htdocs\tenant-system\public\audit_logs.php on line 232
+[2026-09-04 03:55:59] ERROR: A non-numeric value encountered in C:\xampp\htdocs\tenant-system\public\audit_logs.php on line 232
+[2026-09-04 03:55:59] ERROR: A non-numeric value encountered in C:\xampp\htdocs\tenant-system\public\audit_logs.php on line 232
+[2026-09-04 03:55:59] ERROR: A non-numeric value encountered in C:\xampp\htdocs\tenant-system\public\audit_logs.php on line 232
+[2026-09-04 03:55:59] ERROR: A non-numeric value encountered in C:\xampp\htdocs\tenant-system\public\audit_logs.php on line 232
+[2026-09-04 03:55:59] ERROR: A non-numeric value encountered in C:\xampp\htdocs\tenant-system\public\audit_logs.php on line 232
+[2026-09-04 03:55:59] ERROR: A non-numeric value encountered in C:\xampp\htdocs\tenant-system\public\audit_logs.php on line 232
+[2026-09-04 03:55:59] ERROR: A non-numeric value encountered in C:\xampp\htdocs\tenant-system\public\audit_logs.php on line 232
+[2026-09-04 03:55:59] ERROR: A non-numeric value encountered in C:\xampp\htdocs\tenant-system\public\audit_logs.php on line 232
+[2026-09-04 03:55:59] ERROR: A non-numeric value encountered in C:\xampp\htdocs\tenant-system\public\audit_logs.php on line 232
+[2026-09-04 03:55:59] ERROR: A non-numeric value encountered in C:\xampp\htdocs\tenant-system\public\audit_logs.php on line 232
+[2026-09-04 03:55:59] ERROR: A non-numeric value encountered in C:\xampp\htdocs\tenant-system\public\audit_logs.php on line 232
+[2026-09-04 03:55:59] ERROR: A non-numeric value encountered in C:\xampp\htdocs\tenant-system\public\audit_logs.php on line 232
+[2026-09-04 03:55:59] ERROR: A non-numeric value encountered in C:\xampp\htdocs\tenant-system\public\audit_logs.php on line 232
+[2026-09-04 03:55:59] ERROR: A non-numeric value encountered in C:\xampp\htdocs\tenant-system\public\audit_logs.php on line 232
+[2026-09-04 03:55:59] ERROR: A non-numeric value encountered in C:\xampp\htdocs\tenant-system\public\audit_logs.php on line 232
+[2026-09-04 03:55:59] ERROR: A non-numeric value encountered in C:\xampp\htdocs\tenant-system\public\audit_logs.php on line 232
+[2026-09-04 03:55:59] ERROR: A non-numeric value encountered in C:\xampp\htdocs\tenant-system\public\audit_logs.php on line 232

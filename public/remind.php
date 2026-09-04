@@ -6,32 +6,8 @@ declare(strict_types=1);
  * =========================================================
  * TENANT RENT SMS REMINDER
  * =========================================================
- *
- * File:
- *     public/remind.php
- *
- * SMS Provider:
- *     SMS.UG
- *
- * Flow:
- *     Tenants
- *        ↓
- *     Remind Tenant
- *        ↓
- *     Load tenant + room + rent
- *        ↓
- *     Calculate outstanding balance
- *        ↓
- *     Manager reviews / edits SMS
- *        ↓
- *     Re-check balance
- *        ↓
- *     Create SMS log as PENDING
- *        ↓
- *     Send through SMS.UG
- *        ↓
- *     SENT / FAILED
- *
+ * File: public/remind.php
+ * Provider: SMS.UG
  * =========================================================
  */
 
@@ -41,49 +17,28 @@ require_once dirname(__DIR__) . '/core/bootstrap.php';
 use Dotenv\Dotenv;
 
 /* =========================================================
-   1. PROJECT / ENVIRONMENT
+   1. LOAD .ENV
    ========================================================= */
 
 $projectRoot = dirname(__DIR__);
 
 try {
-
     $dotenv = Dotenv::createImmutable($projectRoot);
     $dotenv->safeLoad();
-
 } catch (Throwable $e) {
-
-    // Never expose .env/configuration errors to the browser.
-    error_log(
-        'Dotenv loading failed: ' . $e->getMessage()
-    );
+    error_log('Dotenv loading failed: ' . $e->getMessage());
 }
 
 /* =========================================================
-   2. SMS.UG CONFIGURATION
+   2. SMS.UG CONFIG
    ========================================================= */
 
 $smsApiKey = trim(
     (string)($_ENV['SMS_UG_API_KEY'] ?? '')
 );
 
-/**
- * SMS.UG documentation:
- *
- * POST https://sms.ug/api/
- */
 $smsApiUrl = 'https://sms.ug/api/';
 
-/**
- * Internal title shown in SMS.UG Sent Messages.
- *
- * SMS.UG does not allow symbols such as:
- *
- * ^ GBP $ % & * ( ) { } @ #
- * ~ ? < > | = _ +
- *
- * Keep this simple.
- */
 $smsTitle = 'Rent Reminder';
 
 /* =========================================================
@@ -97,9 +52,7 @@ $adminId = (int)(
 );
 
 if ($adminId <= 0) {
-
     http_response_code(403);
-
     exit('Unauthorized.');
 }
 
@@ -110,14 +63,12 @@ if ($adminId <= 0) {
 $db = $pdo ?? null;
 
 if (!$db instanceof PDO) {
-
     http_response_code(500);
-
     exit('Database connection is not available.');
 }
 
 /* =========================================================
-   5. HELPER FUNCTIONS
+   5. HELPERS
    ========================================================= */
 
 function e(?string $value): string
@@ -129,9 +80,6 @@ function e(?string $value): string
     );
 }
 
-/**
- * Format money as UGX.
- */
 function money(float $amount): string
 {
     return 'UGX ' . number_format(
@@ -143,25 +91,9 @@ function money(float $amount): string
 }
 
 /**
- * Normalize a Ugandan mobile number.
- *
- * SMS.UG accepts:
+ * Normalize Ugandan phone numbers to:
  *
  * 2567XXXXXXXX
- * 07XXXXXXXX
- * 7XXXXXXXX
- * +2567XXXXXXXX
- * +07XXXXXXXX
- *
- * Internally we store/send:
- *
- * 2567XXXXXXXX
- *
- * Example:
- *
- * 0704487563
- *      ↓
- * 256704487563
  */
 function normalizeUgandaPhone(
     string $phone
@@ -169,9 +101,6 @@ function normalizeUgandaPhone(
 
     $phone = trim($phone);
 
-    /**
-     * Remove spaces, hyphens, brackets and dots.
-     */
     $phone = preg_replace(
         '/[\s\-\(\)\.]+/',
         '',
@@ -182,9 +111,8 @@ function normalizeUgandaPhone(
         return null;
     }
 
-    /**
-     * +2567XXXXXXXX
-     */
+    /* +2567XXXXXXXX */
+
     if (
         preg_match(
             '/^\+256(7\d{8})$/',
@@ -192,13 +120,11 @@ function normalizeUgandaPhone(
             $matches
         )
     ) {
-
         return '256' . $matches[1];
     }
 
-    /**
-     * 2567XXXXXXXX
-     */
+    /* 2567XXXXXXXX */
+
     if (
         preg_match(
             '/^256(7\d{8})$/',
@@ -206,13 +132,11 @@ function normalizeUgandaPhone(
             $matches
         )
     ) {
-
         return '256' . $matches[1];
     }
 
-    /**
-     * 07XXXXXXXX
-     */
+    /* 07XXXXXXXX */
+
     if (
         preg_match(
             '/^0(7\d{8})$/',
@@ -220,13 +144,11 @@ function normalizeUgandaPhone(
             $matches
         )
     ) {
-
         return '256' . $matches[1];
     }
 
-    /**
-     * 7XXXXXXXX
-     */
+    /* 7XXXXXXXX */
+
     if (
         preg_match(
             '/^(7\d{8})$/',
@@ -234,16 +156,12 @@ function normalizeUgandaPhone(
             $matches
         )
     ) {
-
         return '256' . $matches[1];
     }
 
     return null;
 }
 
-/**
- * Calculate days overdue.
- */
 function calculateDaysOverdue(
     ?string $rentDueDate
 ): int {
@@ -270,7 +188,7 @@ function calculateDaysOverdue(
 }
 
 /* =========================================================
-   6. TENANT ID
+   6. GET TENANT ID
    ========================================================= */
 
 $tenantId = filter_input(
@@ -291,9 +209,7 @@ if (!$tenantId) {
 $tenantId = (int)$tenantId;
 
 if ($tenantId <= 0) {
-
     http_response_code(400);
-
     exit('Invalid tenant ID.');
 }
 
@@ -363,7 +279,7 @@ if (!$tenant) {
 }
 
 /* =========================================================
-   8. TENANT INFORMATION
+   8. TENANT DATA
    ========================================================= */
 
 $tenantName = trim(
@@ -389,7 +305,7 @@ $effectiveRent = (float)(
 $paymentMonth = date('Y-m');
 
 /* =========================================================
-   9. CURRENT MONTH RENT DUE
+   9. CALCULATE CURRENT MONTH DUE
    ========================================================= */
 
 $scheduleStmt = $db->prepare(
@@ -412,10 +328,6 @@ $scheduledDue = (float)(
     $scheduleStmt->fetchColumn()
 );
 
-/**
- * If no schedule exists, use the tenant's
- * effective monthly rent.
- */
 $amountDue = $scheduledDue > 0
     ? $scheduledDue
     : $effectiveRent;
@@ -446,9 +358,6 @@ $amountPaid = (float)(
     $paymentStmt->fetchColumn()
 );
 
-/**
- * Never display a negative balance.
- */
 $outstandingBalance = max(
     0,
     $amountDue - $amountPaid
@@ -478,25 +387,18 @@ $daysOverdue = calculateDaysOverdue(
 );
 
 /* =========================================================
-   12. DEFAULT SMS MESSAGE
+   12. DEFAULT MESSAGE
    ========================================================= */
 
 $defaultMessage = sprintf(
-    'Hello %s, this is a reminder that your rent for Room %s is overdue. Your outstanding balance is %s. Please make payment as soon as possible. Thank you.',
+    'Hello %s, this is a reminder that your rent is overdue. Your balance is %s. Please make payment as soon as possible. Thank you.',
     $tenantName !== ''
         ? $tenantName
         : 'Tenant',
-
-    $roomNumber !== ''
-        ? $roomNumber
-        : 'your room',
-
+   
     money($outstandingBalance)
 );
 
-/**
- * SMS.UG maximum is 480 characters.
- */
 $defaultMessage = mb_substr(
     $defaultMessage,
     0,
@@ -512,6 +414,7 @@ $message = $defaultMessage;
 $phoneForForm = $tenantPhone;
 
 $successMessage = '';
+
 $errorMessage = '';
 
 $providerResponse = null;
@@ -529,17 +432,18 @@ if (
         bin2hex(random_bytes(32));
 }
 
-$csrfToken = $_SESSION['csrf_token'];
+$csrfToken =
+    $_SESSION['csrf_token'];
 
 /* =========================================================
-   15. POST — SEND SMS
+   15. HANDLE POST
    ========================================================= */
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
-    /* -----------------------------------------------------
+    /* =====================================================
        CSRF
-       ----------------------------------------------------- */
+       ===================================================== */
 
     $submittedCsrf = (string)(
         $_POST['csrf_token'] ?? ''
@@ -556,9 +460,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'Security validation failed. Please refresh the page and try again.';
     }
 
-    /* -----------------------------------------------------
-       FORM VALUES
-       ----------------------------------------------------- */
+    /* =====================================================
+       FORM INPUT
+       ===================================================== */
 
     $phoneForForm = trim(
         (string)(
@@ -574,9 +478,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         )
     );
 
-    /* -----------------------------------------------------
+    /* =====================================================
        API KEY
-       ----------------------------------------------------- */
+       ===================================================== */
 
     if (
         $errorMessage === '' &&
@@ -587,9 +491,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'SMS could not be sent because SMS.UG API access is not configured. Check SMS_UG_API_KEY in your .env file.';
     }
 
-    /* -----------------------------------------------------
-       PHONE VALIDATION
-       ----------------------------------------------------- */
+    /* =====================================================
+       PHONE
+       ===================================================== */
 
     $normalizedPhone =
         normalizeUgandaPhone(
@@ -605,9 +509,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'Please enter a valid Ugandan mobile number, for example 0704487563.';
     }
 
-    /* -----------------------------------------------------
-       MESSAGE VALIDATION
-       ----------------------------------------------------- */
+    /* =====================================================
+       MESSAGE
+       ===================================================== */
 
     if (
         $errorMessage === '' &&
@@ -624,12 +528,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     ) {
 
         $errorMessage =
-            'SMS message is too long. SMS.UG allows a maximum of 480 characters.';
+            'SMS.UG allows a maximum of 480 characters.';
     }
 
-    /* -----------------------------------------------------
+    /* =====================================================
        RECHECK TENANT OWNERSHIP
-       ----------------------------------------------------- */
+       ===================================================== */
 
     if ($errorMessage === '') {
 
@@ -657,25 +561,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 
-    /* -----------------------------------------------------
-       RECHECK CURRENT BALANCE
-       ----------------------------------------------------- */
+    /* =====================================================
+       RECHECK BALANCE
+       ===================================================== */
 
     if ($errorMessage === '') {
-
-        /**
-         * Recalculate immediately before sending.
-         *
-         * This protects against:
-         *
-         * Manager opens reminder page
-         *        ↓
-         * Tenant pays
-         *        ↓
-         * Manager clicks Send
-         *
-         * We don't want to send an outdated reminder.
-         */
 
         $verifyScheduleStmt = $db->prepare(
             "
@@ -738,9 +628,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $outstandingBalance =
             $verifiedBalance;
 
-        /**
-         * Stop sending if tenant is now fully paid.
-         */
         if ($verifiedBalance <= 0) {
 
             $errorMessage =
@@ -748,9 +635,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 
-    /* -----------------------------------------------------
-       CREATE PENDING SMS LOG
-       ----------------------------------------------------- */
+    /* =====================================================
+       CREATE SMS LOG — PENDING
+       ===================================================== */
 
     $smsLogId = null;
 
@@ -835,9 +722,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 
-    /* -----------------------------------------------------
-       SEND SMS.UG REQUEST
-       ----------------------------------------------------- */
+    /* =====================================================
+       PREPARE SMS.UG PAYLOAD
+       ===================================================== */
 
     if (
         $errorMessage === '' &&
@@ -893,6 +780,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
 
+        /* =================================================
+           SEND REQUEST
+           ================================================= */
+
         if (
             $errorMessage === '' &&
             $jsonPayload !== false
@@ -905,33 +796,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             curl_setopt_array(
                 $ch,
                 [
+                    CURLOPT_POST => true,
 
-                    CURLOPT_POST =>
-                        true,
-
-                    CURLOPT_RETURNTRANSFER =>
-                        true,
+                    CURLOPT_RETURNTRANSFER => true,
 
                     CURLOPT_HTTPHEADER => [
-                        'Authorization: Bearer ' . $smsApiKey,
+                        'Authorization: Bearer ' .
+                        $smsApiKey,
+
                         'Content-Type: application/json',
+
                         'Accept: application/json',
                     ],
 
                     CURLOPT_POSTFIELDS =>
                         $jsonPayload,
 
-                    CURLOPT_TIMEOUT =>
-                        30,
+                    CURLOPT_TIMEOUT => 30,
 
-                    CURLOPT_CONNECTTIMEOUT =>
-                        10,
+                    CURLOPT_CONNECTTIMEOUT => 10,
 
-                    CURLOPT_SSL_VERIFYPEER =>
-                        true,
+                    CURLOPT_SSL_VERIFYPEER => true,
 
-                    CURLOPT_SSL_VERIFYHOST =>
-                        2,
+                    CURLOPT_SSL_VERIFYHOST => 2,
                 ]
             );
 
@@ -949,17 +836,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             curl_close($ch);
 
-            /**
-             * Never expose the API key in the response.
-             */
-            $providerResponse =
+            if (
                 $responseBody !== false
-                    ? $responseBody
-                    : null;
+            ) {
 
-            /* ---------------------------------------------
-               CURL FAILURE
-               --------------------------------------------- */
+                $providerResponse =
+                    $responseBody;
+            }
+
+            /* =============================================
+               CURL ERROR
+               ============================================= */
 
             if (
                 $responseBody === false ||
@@ -998,23 +885,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 } catch (Throwable $e) {
 
                     error_log(
-                        'SMS failed-log update error: ' .
+                        'Failed to update SMS failure log: ' .
                         $e->getMessage()
                     );
                 }
 
                 $errorMessage =
-                    'SMS could not be sent because SMS.UG could not be reached.';
+                    'SMS.UG could not be reached. Please try again later.';
 
                 error_log(
-                    'SMS.UG cURL error: ' .
+                    'SMS.UG connection error: ' .
                     $failureReason
                 );
             }
 
-            /* ---------------------------------------------
-               PROCESS SMS.UG RESPONSE
-               --------------------------------------------- */
+            /* =============================================
+               PROCESS RESPONSE
+               ============================================= */
 
             else {
 
@@ -1024,28 +911,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         true
                     );
 
-                /* -----------------------------------------
+                /* =========================================
                    SUCCESS
-                   ----------------------------------------- */
+                   ========================================= */
 
                 if (
                     $httpCode === 200 &&
                     is_array($providerData) &&
-                    ($providerData['status'] ?? '')
-                        === 'success'
+                    isset($providerData['status']) &&
+                    $providerData['status'] === 'success'
                 ) {
 
-                    /**
-                     * SMS.UG calls this a token.
-                     *
-                     * It uniquely identifies the message.
-                     */
-                    $providerToken =
-                        isset(
-                            $providerData['token']
-                        )
-                            ? (string)$providerData['token']
-                            : null;
+                    $providerToken = null;
+
+                    if (
+                        isset($providerData['token'])
+                    ) {
+
+                        $providerToken =
+                            (string)$providerData['token'];
+                    }
 
                     try {
 
@@ -1072,14 +957,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     } catch (Throwable $e) {
 
                         error_log(
-                            'SMS success-log update failed: ' .
+                            'SMS success log update failed: ' .
                             $e->getMessage()
                         );
                     }
 
-                    /* -------------------------------------
-                       AUDIT LOG
-                       ------------------------------------- */
+                    /* =====================================
+                       AUDIT
+                       ===================================== */
 
                     try {
 
@@ -1100,7 +985,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     } catch (Throwable $e) {
 
                         error_log(
-                            'Audit logging failed: ' .
+                            'Audit log failed: ' .
                             $e->getMessage()
                         );
                     }
@@ -1109,32 +994,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         'SMS was accepted by SMS.UG and recorded successfully.';
                 }
 
-                /* -----------------------------------------
+                /* =========================================
                    FAILURE
-                   ----------------------------------------- */
+                   ========================================= */
 
                 else {
 
-                    /**
-                     * Try to extract SMS.UG's documented
-                     * error information.
-                     */
-                    $providerError =
-                        is_array($providerData)
-                            ? (
-                                (string)(
-                                    $providerData['message']
-                                    ?? $providerData['error']
-                                    ?? ''
-                                )
-                            )
-                            : '';
+                    $errorCode = '';
+
+                    $providerErrorMessage = '';
+
+                    if (is_array($providerData)) {
+
+                        $errorCode =
+                            (string)(
+                                $providerData['error']
+                                ?? ''
+                            );
+
+                        $providerErrorMessage =
+                            (string)(
+                                $providerData['message']
+                                ?? ''
+                            );
+                    }
 
                     $failureReason =
-                        $providerError !== ''
-                            ? $providerError
-                            : 'SMS.UG returned HTTP ' .
-                              $httpCode;
+                        $providerErrorMessage !== ''
+                            ? $providerErrorMessage
+                            : (
+                                $errorCode !== ''
+                                    ? $errorCode
+                                    : 'SMS.UG returned HTTP ' .
+                                      $httpCode
+                            );
 
                     try {
 
@@ -1164,62 +1057,84 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     } catch (Throwable $e) {
 
                         error_log(
-                            'SMS failure-log update failed: ' .
+                            'SMS failure log update failed: ' .
                             $e->getMessage()
                         );
                     }
 
-                    /**
-                     * Convert known SMS.UG errors into
-                     * useful manager-facing messages.
-                     */
-                    $errorCode =
-                        is_array($providerData)
-                            ? (
-                                string)(
-                                    $providerData['error']
-                                    ?? ''
-                                )
-                            )
-                            : '';
+                    /* =====================================
+                       FRIENDLY ERROR
+                       ===================================== */
 
-                    $friendlyError =
-                        match ($errorCode) {
+                    if (
+                        $errorCode === 'insufficient_balance'
+                    ) {
 
-                            'insufficient_balance' =>
-                                'SMS.UG does not have enough balance to send this SMS.',
+                        $errorMessage =
+                            'SMS.UG does not have enough balance to send this SMS.';
 
-                            'invalid_contacts' =>
-                                'SMS.UG rejected the phone number. Please check the tenant\'s number.',
+                    } elseif (
+                        $errorCode === 'invalid_contacts'
+                    ) {
 
-                            'message_too_long' =>
-                                'SMS.UG rejected the message because it exceeds 480 characters.',
+                        $errorMessage =
+                            'SMS.UG rejected the phone number. Please check the tenant\'s number.';
 
-                            'invalid_title' =>
-                                'SMS.UG rejected the SMS title.',
+                    } elseif (
+                        $errorCode === 'message_too_long'
+                    ) {
 
-                            'api_disabled' =>
-                                'SMS.UG API access is disabled. Enable API access in your SMS.UG account settings.',
+                        $errorMessage =
+                            'The message exceeds SMS.UG\'s 480-character limit.';
 
-                            'unauthorized' =>
-                                'SMS.UG rejected the API credentials. Check your SMS_UG_API_KEY.',
+                    } elseif (
+                        $errorCode === 'invalid_title'
+                    ) {
 
-                            'rate_limited' =>
-                                'SMS.UG rate limit reached. Please wait before trying again.',
+                        $errorMessage =
+                            'SMS.UG rejected the SMS title.';
 
-                            'gateway_failed' =>
-                                'SMS.UG could not deliver the message to the SMS gateway. You were not charged.',
+                    } elseif (
+                        $errorCode === 'api_disabled'
+                    ) {
 
-                            'internal_error' =>
-                                'SMS.UG encountered an internal error. Please try again.',
+                        $errorMessage =
+                            'SMS.UG API access is disabled. Enable API access in your SMS.UG account settings.';
 
-                            default =>
-                                'SMS.UG rejected the SMS request. ' .
-                                $failureReason,
-                        };
+                    } elseif (
+                        $errorCode === 'unauthorized'
+                    ) {
 
-                    $errorMessage =
-                        $friendlyError;
+                        $errorMessage =
+                            'SMS.UG rejected the API credentials. Check SMS_UG_API_KEY in your .env file.';
+
+                    } elseif (
+                        $errorCode === 'rate_limited'
+                    ) {
+
+                        $errorMessage =
+                            'SMS.UG rate limit reached. Please wait before trying again.';
+
+                    } elseif (
+                        $errorCode === 'gateway_failed'
+                    ) {
+
+                        $errorMessage =
+                            'SMS.UG could not hand the message to the SMS gateway. You were not charged.';
+
+                    } elseif (
+                        $errorCode === 'internal_error'
+                    ) {
+
+                        $errorMessage =
+                            'SMS.UG encountered an internal error. Please try again.';
+
+                    } else {
+
+                        $errorMessage =
+                            'SMS.UG rejected the SMS request. ' .
+                            $failureReason;
+                    }
 
                     error_log(
                         'SMS.UG API failure: ' .
@@ -1381,9 +1296,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             class="grid gap-6 lg:grid-cols-3"
         >
 
-            <!-- =================================================
-                 TENANT SUMMARY
-                 ================================================= -->
+            <!-- TENANT SUMMARY -->
 
             <section
                 class="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm lg:col-span-1"
@@ -1401,8 +1314,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 <div class="space-y-5">
 
-                    <!-- NAME -->
-
                     <div>
 
                         <p
@@ -1418,8 +1329,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         </p>
 
                     </div>
-
-                    <!-- PHONE -->
 
                     <div>
 
@@ -1440,8 +1349,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         </p>
 
                     </div>
-
-                    <!-- ROOM -->
 
                     <div>
 
@@ -1473,8 +1380,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                     </div>
 
-                    <!-- RENT -->
-
                     <div>
 
                         <p
@@ -1493,8 +1398,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                     </div>
 
-                    <!-- MONTH -->
-
                     <div>
 
                         <p
@@ -1510,8 +1413,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         </p>
 
                     </div>
-
-                    <!-- FINANCIAL SUMMARY -->
 
                     <div
                         class="rounded-xl border border-slate-200 bg-slate-50 p-4"
@@ -1590,8 +1491,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                     </div>
 
-                    <!-- STATUS -->
-
                     <div>
 
                         <span
@@ -1625,9 +1524,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             </section>
 
-            <!-- =================================================
-                 SMS FORM
-                 ================================================= -->
+            <!-- SMS FORM -->
 
             <section
                 class="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm lg:col-span-2"
@@ -1693,8 +1590,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         <p
                             class="mt-2 text-xs text-slate-500"
                         >
-                            Example:
-                            0704487563
+                            Example: 0704487563
                         </p>
 
                     </div>
@@ -1735,7 +1631,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         <p
                             class="mt-2 text-xs text-slate-500"
                         >
-                            Messages above 160 characters may use more than one SMS unit.
+                            SMS.UG charges multiple SMS units for messages over 160 characters.
                         </p>
 
                     </div>
@@ -1772,7 +1668,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                     <p
                                         class="mt-1 text-xs text-amber-700"
                                     >
-                                        The system will verify the balance again before sending.
+                                        The balance will be verified again before sending.
                                     </p>
 
                                 </div>
@@ -1833,9 +1729,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         </div>
 
-        <!-- =====================================================
-             PROVIDER RESPONSE
-             ===================================================== -->
+        <!-- PROVIDER RESPONSE -->
 
         <?php if ($providerResponse !== null): ?>
 
@@ -1860,7 +1754,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 <p
                     class="mt-3 text-xs text-slate-500"
                 >
-                    A successful response means SMS.UG accepted the message. Delivery status is available from the SMS.UG dashboard, but their documentation does not currently provide a status-lookup API.
+                    A successful response means SMS.UG accepted the message. Delivery status can be checked from the SMS.UG dashboard.
                 </p>
 
             </section>
@@ -1890,9 +1784,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     const buttonText =
         document.getElementById('sendButtonText');
 
-    /* -----------------------------------------------------
-       CHARACTER COUNTER
-       ----------------------------------------------------- */
+    /* CHARACTER COUNTER */
 
     if (message && counter) {
 
@@ -1912,9 +1804,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         updateCounter();
     }
 
-    /* -----------------------------------------------------
-       PREVENT DOUBLE SUBMISSION
-       ----------------------------------------------------- */
+    /* PREVENT DOUBLE SUBMISSION */
 
     if (form && button) {
 

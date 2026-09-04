@@ -34,7 +34,7 @@ $moreClasses = $moreIsActive
     <a href="dashboard.php" class="flex min-w-0 shrink-0 items-center gap-3 rounded-xl focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900" aria-label="Tenant System dashboard">
       <span class="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-slate-900 font-black text-white">TS</span>
       <span class="min-w-0 leading-tight">
-        <span class="block truncate font-extrabold text-slate-900">Tenant System</span>
+        <span class="block truncate font-extrabold text-slate-900">Urbahan</span>
         <span class="block truncate text-xs text-slate-500">
           Logged in as <?= e($_SESSION['admin']['name'] ?? ($_SESSION['admin_name'] ?? 'Admin')) ?>
           <span class="ml-1 hidden items-center rounded-full border border-slate-200 px-2 py-0.5 text-[11px] font-semibold text-slate-600 sm:inline-flex">
