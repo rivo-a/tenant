@@ -111,6 +111,7 @@ $dataStmt = $pdo->prepare("
         p.amount,
         p.method,
         p.note,
+        COALESCE(p.verification_status, 'done') AS verification_status,
         t.full_name,
         t.status AS tenant_status,
         t.exit_date,
@@ -279,6 +280,7 @@ $active = 'history'; // matches navbar.php key
               <th class="px-4 py-3 text-left font-semibold">Method</th>
               <th class="px-4 py-3 text-left font-semibold">Note</th>
               <th class="px-4 py-3 text-left font-semibold">Month status</th>
+              <th class="px-4 py-3 text-left font-semibold">Verification</th>
               <th class="px-4 py-3 text-left font-semibold">Due date</th>
             </tr>
           </thead>
@@ -286,7 +288,7 @@ $active = 'history'; // matches navbar.php key
           <tbody class="divide-y divide-slate-100">
             <?php if (!$payments): ?>
               <tr>
-                <td colspan="9" class="px-4 py-6">
+                <td colspan="12" class="px-4 py-6">
                   <div class="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-4 text-sm text-slate-700">
                     No payments found for this filter.
                   </div>
@@ -298,6 +300,14 @@ $active = 'history'; // matches navbar.php key
               <?php
                 $status = strtoupper((string)($p['month_status'] ?? 'PARTIAL'));
                 $statusChip = ($status === 'PAID') ? chip('PAID', 'green') : chip('PARTIAL', 'amber');
+                $verificationStatus = strtolower((string)($p['verification_status'] ?? 'done'));
+                $verificationTone = match ($verificationStatus) {
+                    'pending' => 'amber',
+                    'confirmed' => 'blue',
+                    'done' => 'green',
+                    default => 'slate',
+                };
+                $verificationChip = chip(ucfirst($verificationStatus), $verificationTone);
                 $tenantStatus = strtolower((string)($p['tenant_status'] ?? 'active'));
                 $tenantStatusChip = $tenantStatus === 'exited'
                     ? chip('Exited', 'slate')
@@ -327,6 +337,7 @@ $active = 'history'; // matches navbar.php key
                 <td class="px-4 py-3"><?= e($methodLabel) ?></td>
                 <td class="max-w-xs px-4 py-3 text-slate-700"><?= e($note !== '' ? $note : '—') ?></td>
                 <td class="px-4 py-3"><?= $statusChip ?></td>
+                <td class="px-4 py-3"><?= $verificationChip ?></td>
                 <td class="px-4 py-3"><?= $dueChip ?></td>
               </tr>
             <?php endforeach; ?>

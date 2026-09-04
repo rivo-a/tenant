@@ -85,7 +85,8 @@ if ($tenantId > 0) {
                 SELECT
                     amount,
                     payment_date,
-                    created_at
+                    created_at,
+                    COALESCE(verification_status, 'done') AS verification_status
                 FROM payments
                 WHERE tenant_id = ?
                   AND admin_id  = ?
@@ -303,6 +304,7 @@ $active = 'tenant_payments';
                   <th class="px-4 py-3 text-left font-semibold">Date</th>
                   <th class="px-4 py-3 text-left font-semibold">Amount</th>
                   <th class="px-4 py-3 text-left font-semibold">Recorded At</th>
+                  <th class="px-4 py-3 text-left font-semibold">Verification</th>
                 </tr>
               </thead>
               <tbody class="divide-y divide-slate-100">
@@ -311,6 +313,18 @@ $active = 'tenant_payments';
                     <td class="px-4 py-3"><?= e($tx['payment_date'] ?? '') ?></td>
                     <td class="px-4 py-3 font-semibold">UGX <?= e(money($tx['amount'] ?? 0)) ?></td>
                     <td class="px-4 py-3 text-slate-700 font-mono text-xs"><?= format_datetime($tx['created_at'] ?? null) ?></td>
+                    <td class="px-4 py-3">
+                      <?php
+                        $verificationStatus = strtolower((string)($tx['verification_status'] ?? 'done'));
+                        $verificationTone = match ($verificationStatus) {
+                            'pending' => 'amber',
+                            'confirmed' => 'blue',
+                            'done' => 'green',
+                            default => 'slate',
+                        };
+                      ?>
+                      <?= chip(ucfirst($verificationStatus), $verificationTone) ?>
+                    </td>
                   </tr>
                 <?php endforeach; ?>
               </tbody>

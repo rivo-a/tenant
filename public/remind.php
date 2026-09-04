@@ -8,6 +8,7 @@ declare(strict_types=1);
  * =========================================================
  * File: public/remind.php
  * Provider: SMS.UG
+ * API Endpoint: https://app.sms.ug/api/
  * =========================================================
  */
 
@@ -30,14 +31,19 @@ try {
 }
 
 /* =========================================================
-   2. SMS.UG CONFIG
+   2. SMS.UG CONFIGURATION
    ========================================================= */
 
 $smsApiKey = trim(
     (string)($_ENV['SMS_UG_API_KEY'] ?? '')
 );
 
-$smsApiUrl = 'https://sms.ug/api/';
+/*
+ * IMPORTANT:
+ * This is the API endpoint from the cURL example provided
+ * for the current SMS.UG API.
+ */
+$smsApiUrl = 'https://app.sms.ug/api/';
 
 $smsTitle = 'Rent Reminder';
 
@@ -94,11 +100,15 @@ function money(float $amount): string
  * Normalize Ugandan phone numbers to:
  *
  * 2567XXXXXXXX
+ *
+ * Accepted formats:
+ * +2567XXXXXXXX
+ * 2567XXXXXXXX
+ * 07XXXXXXXX
+ * 7XXXXXXXX
  */
-function normalizeUgandaPhone(
-    string $phone
-): ?string {
-
+function normalizeUgandaPhone(string $phone): ?string
+{
     $phone = trim($phone);
 
     $phone = preg_replace(
@@ -112,7 +122,6 @@ function normalizeUgandaPhone(
     }
 
     /* +2567XXXXXXXX */
-
     if (
         preg_match(
             '/^\+256(7\d{8})$/',
@@ -124,7 +133,6 @@ function normalizeUgandaPhone(
     }
 
     /* 2567XXXXXXXX */
-
     if (
         preg_match(
             '/^256(7\d{8})$/',
@@ -136,7 +144,6 @@ function normalizeUgandaPhone(
     }
 
     /* 07XXXXXXXX */
-
     if (
         preg_match(
             '/^0(7\d{8})$/',
@@ -148,7 +155,6 @@ function normalizeUgandaPhone(
     }
 
     /* 7XXXXXXXX */
-
     if (
         preg_match(
             '/^(7\d{8})$/',
@@ -162,16 +168,13 @@ function normalizeUgandaPhone(
     return null;
 }
 
-function calculateDaysOverdue(
-    ?string $rentDueDate
-): int {
-
+function calculateDaysOverdue(?string $rentDueDate): int
+{
     if (!$rentDueDate) {
         return 0;
     }
 
     try {
-
         $due = new DateTime($rentDueDate);
         $today = new DateTime('today');
 
@@ -180,9 +183,7 @@ function calculateDaysOverdue(
         }
 
         return (int)$due->diff($today)->days;
-
     } catch (Throwable $e) {
-
         return 0;
     }
 }
@@ -198,7 +199,6 @@ $tenantId = filter_input(
 );
 
 if (!$tenantId) {
-
     $tenantId = filter_input(
         INPUT_POST,
         'tenant_id',
@@ -270,7 +270,6 @@ $tenant = $tenantStmt->fetch(
 );
 
 if (!$tenant) {
-
     http_response_code(404);
 
     exit(
@@ -312,7 +311,9 @@ $scheduleStmt = $db->prepare(
     "
     SELECT
         COALESCE(SUM(amount_due), 0)
+
     FROM rent_schedule
+
     WHERE
         tenant_id = :tenant_id
         AND month = :payment_month
@@ -340,7 +341,9 @@ $paymentStmt = $db->prepare(
     "
     SELECT
         COALESCE(SUM(amount), 0)
+
     FROM payments
+
     WHERE
         tenant_id = :tenant_id
         AND payment_month = :payment_month
@@ -370,15 +373,10 @@ $outstandingBalance = max(
 $todayDay = (int)date('j');
 
 if ($outstandingBalance <= 0) {
-
     $paymentStatus = 'Paid';
-
 } elseif ($todayDay > 5) {
-
     $paymentStatus = 'Overdue';
-
 } else {
-
     $paymentStatus = 'Due';
 }
 
@@ -395,7 +393,6 @@ $defaultMessage = sprintf(
     $tenantName !== ''
         ? $tenantName
         : 'Tenant',
-   
     money($outstandingBalance)
 );
 
@@ -410,11 +407,9 @@ $defaultMessage = mb_substr(
    ========================================================= */
 
 $message = $defaultMessage;
-
 $phoneForForm = $tenantPhone;
 
 $successMessage = '';
-
 $errorMessage = '';
 
 $providerResponse = null;
@@ -427,13 +422,12 @@ if (
     empty($_SESSION['csrf_token']) ||
     !is_string($_SESSION['csrf_token'])
 ) {
-
-    $_SESSION['csrf_token'] =
-        bin2hex(random_bytes(32));
+    $_SESSION['csrf_token'] = bin2hex(
+        random_bytes(32)
+    );
 }
 
-$csrfToken =
-    $_SESSION['csrf_token'];
+$csrfToken = $_SESSION['csrf_token'];
 
 /* =========================================================
    15. HANDLE POST
@@ -455,7 +449,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $submittedCsrf
         )
     ) {
-
         $errorMessage =
             'Security validation failed. Please refresh the page and try again.';
     }
@@ -486,7 +479,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $errorMessage === '' &&
         $smsApiKey === ''
     ) {
-
         $errorMessage =
             'SMS could not be sent because SMS.UG API access is not configured. Check SMS_UG_API_KEY in your .env file.';
     }
@@ -504,7 +496,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $errorMessage === '' &&
         $normalizedPhone === null
     ) {
-
         $errorMessage =
             'Please enter a valid Ugandan mobile number, for example 0704487563.';
     }
@@ -517,7 +508,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $errorMessage === '' &&
         $message === ''
     ) {
-
         $errorMessage =
             'SMS message cannot be empty.';
     }
@@ -526,7 +516,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $errorMessage === '' &&
         mb_strlen($message) > 480
     ) {
-
         $errorMessage =
             'SMS.UG allows a maximum of 480 characters.';
     }
@@ -540,11 +529,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $ownershipStmt = $db->prepare(
             "
             SELECT id
+
             FROM tenants
+
             WHERE
                 id = :tenant_id
                 AND admin_id = :admin_id
                 AND exit_date IS NULL
+
             LIMIT 1
             "
         );
@@ -555,7 +547,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         ]);
 
         if (!$ownershipStmt->fetchColumn()) {
-
             $errorMessage =
                 'You are not authorized to send a reminder to this tenant.';
         }
@@ -571,7 +562,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             "
             SELECT
                 COALESCE(SUM(amount_due), 0)
+
             FROM rent_schedule
+
             WHERE
                 tenant_id = :tenant_id
                 AND month = :payment_month
@@ -587,7 +580,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             (float)$verifyScheduleStmt->fetchColumn();
 
         if ($verifiedScheduledDue <= 0) {
-
             $verifiedScheduledDue =
                 $effectiveRent;
         }
@@ -596,7 +588,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             "
             SELECT
                 COALESCE(SUM(amount), 0)
+
             FROM payments
+
             WHERE
                 tenant_id = :tenant_id
                 AND payment_month = :payment_month
@@ -629,7 +623,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $verifiedBalance;
 
         if ($verifiedBalance <= 0) {
-
             $errorMessage =
                 'This tenant has already paid the current month\'s rent. The SMS was not sent.';
         }
@@ -661,6 +654,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     created_at,
                     updated_at
                 )
+
                 VALUES (
                     :tenant_id,
                     :admin_id,
@@ -703,8 +697,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ':outstanding_balance' =>
                     $outstandingBalance,
 
+                /*
+                 * Provider identifier used for the API.
+                 */
                 ':provider' =>
-                    'sms.ug',
+                    'app.sms.ug',
             ]);
 
             $smsLogId =
@@ -733,7 +730,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         $payload = [
             'title' => $smsTitle,
+
             'message' => $message,
+
             'contacts' => [
                 $normalizedPhone
             ],
@@ -755,10 +754,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $updateLog = $db->prepare(
                     "
                     UPDATE sms_logs
+
                     SET
                         status = 'FAILED',
                         failure_reason = :reason,
                         updated_at = CURRENT_TIMESTAMP
+
                     WHERE id = :id
                     "
                 );
@@ -796,9 +797,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             curl_setopt_array(
                 $ch,
                 [
-                    CURLOPT_POST => true,
 
-                    CURLOPT_RETURNTRANSFER => true,
+                    /*
+                     * This follows the SMS.UG cURL example:
+                     *
+                     * POST https://app.sms.ug/api/
+                     */
+                    CURLOPT_URL =>
+                        $smsApiUrl,
+
+                    CURLOPT_RETURNTRANSFER =>
+                        true,
+
+                    CURLOPT_ENCODING =>
+                        '',
+
+                    CURLOPT_MAXREDIRS =>
+                        10,
+
+                    CURLOPT_TIMEOUT =>
+                        0,
+
+                    CURLOPT_FOLLOWLOCATION =>
+                        true,
+
+                    CURLOPT_HTTP_VERSION =>
+                        CURL_HTTP_VERSION_1_1,
+
+                    CURLOPT_CUSTOMREQUEST =>
+                        'POST',
+
+                    CURLOPT_POSTFIELDS =>
+                        $jsonPayload,
 
                     CURLOPT_HTTPHEADER => [
                         'Authorization: Bearer ' .
@@ -809,16 +839,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         'Accept: application/json',
                     ],
 
-                    CURLOPT_POSTFIELDS =>
-                        $jsonPayload,
+                    CURLOPT_SSL_VERIFYPEER =>
+                        true,
 
-                    CURLOPT_TIMEOUT => 30,
-
-                    CURLOPT_CONNECTTIMEOUT => 10,
-
-                    CURLOPT_SSL_VERIFYPEER => true,
-
-                    CURLOPT_SSL_VERIFYHOST => 2,
+                    CURLOPT_SSL_VERIFYHOST =>
+                        2,
                 ]
             );
 
@@ -839,7 +864,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (
                 $responseBody !== false
             ) {
-
                 $providerResponse =
                     $responseBody;
             }
@@ -866,10 +890,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $updateLog = $db->prepare(
                         "
                         UPDATE sms_logs
+
                         SET
                             status = 'FAILED',
                             failure_reason = :reason,
                             updated_at = CURRENT_TIMESTAMP
+
                         WHERE id = :id
                         "
                     );
@@ -927,7 +953,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     if (
                         isset($providerData['token'])
                     ) {
-
                         $providerToken =
                             (string)$providerData['token'];
                     }
@@ -937,11 +962,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $updateLog = $db->prepare(
                             "
                             UPDATE sms_logs
+
                             SET
                                 status = 'SENT',
                                 provider_message_id = :token,
                                 sent_at = CURRENT_TIMESTAMP,
                                 updated_at = CURRENT_TIMESTAMP
+
                             WHERE id = :id
                             "
                         );
@@ -1001,7 +1028,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 else {
 
                     $errorCode = '';
-
                     $providerErrorMessage = '';
 
                     if (is_array($providerData)) {
@@ -1034,10 +1060,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $updateLog = $db->prepare(
                             "
                             UPDATE sms_logs
+
                             SET
                                 status = 'FAILED',
                                 failure_reason = :reason,
                                 updated_at = CURRENT_TIMESTAMP
+
                             WHERE id = :id
                             "
                         );
@@ -1147,7 +1175,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 ?>
+
 <!DOCTYPE html>
+
 <html lang="en">
 
 <head>
@@ -1818,10 +1848,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                     buttonText.textContent =
                         'Sending...';
+
                 }
 
             }
         );
+
     }
 
 })();
@@ -1831,4 +1863,3 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 </body>
 
 </html>
-

@@ -72,6 +72,7 @@ $whereRoom = $room_type ? "AND rt.id = ?" : "";
 
 $sql = "
     SELECT p.id, p.payment_date, p.amount, p.method,
+           COALESCE(p.verification_status, 'done') AS verification_status,
            t.full_name, r.room_number, rt.name AS room_type
     FROM payments p
     JOIN tenants t ON t.id=p.tenant_id
@@ -116,7 +117,7 @@ if (isset($_GET['export']) && $_GET['export'] === 'csv') {
     header('Content-Type: text/csv');
     header('Content-Disposition: attachment; filename=payments_'.$year.'.csv');
     $out = fopen('php://output', 'w');
-    fputcsv($out, ['Date','Tenant','Room','Type','Amount','Method']);
+    fputcsv($out, ['Date','Tenant','Room','Type','Amount','Method','Verification']);
 
     foreach ($payments as $p) {
         fputcsv($out, [
@@ -126,6 +127,7 @@ if (isset($_GET['export']) && $_GET['export'] === 'csv') {
             (string)($p['room_type'] ?? ''),
             (string)($p['amount'] ?? 0),
             (string)($p['method'] ?? ''),
+            (string)($p['verification_status'] ?? 'done'),
         ]);
     }
     exit;
@@ -387,6 +389,7 @@ $active = 'reports';
                 <th class="px-4 py-3 text-left font-semibold">Type</th>
                 <th class="px-4 py-3 text-left font-semibold">Amount</th>
                 <th class="px-4 py-3 text-left font-semibold">Method</th>
+                <th class="px-4 py-3 text-left font-semibold">Verification</th>
               </tr>
             </thead>
             <tbody class="divide-y divide-slate-100">
@@ -398,6 +401,16 @@ $active = 'reports';
                   <td class="px-4 py-3"><?= e($p['room_type'] ?? '-') ?></td>
                   <td class="px-4 py-3 font-semibold">UGX <?= e(money($p['amount'] ?? 0)) ?></td>
                   <td class="px-4 py-3"><?= chip((string)($p['method'] ?? 'cash'), 'slate') ?></td>
+                  <?php
+                    $verificationStatus = strtolower((string)($p['verification_status'] ?? 'done'));
+                    $verificationTone = match ($verificationStatus) {
+                        'pending' => 'amber',
+                        'confirmed' => 'blue',
+                        'done' => 'green',
+                        default => 'slate',
+                    };
+                  ?>
+                  <td class="px-4 py-3"><?= chip(ucfirst($verificationStatus), $verificationTone) ?></td>
                 </tr>
               <?php endforeach; ?>
             </tbody>

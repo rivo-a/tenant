@@ -1,7 +1,21 @@
 <?php
 declare(strict_types=1);
 define('BASE_URL', '/tenant-system/public');
-date_default_timezone_set ('Africa/Kampala');
+date_default_timezone_set('Africa/Kampala');
+
+if (!function_exists('app_env')) {
+    function app_env(string $key, string $default = ''): string
+    {
+        $value = $_ENV[$key] ?? $_SERVER[$key] ?? getenv($key);
+
+        if (!is_string($value) || trim($value) === '') {
+            return $default;
+        }
+
+        return trim($value);
+    }
+}
+
 /*
 |--------------------------------------------------------------------------
 | Database Configuration (SQLite)

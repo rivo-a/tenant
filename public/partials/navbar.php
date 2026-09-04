@@ -32,7 +32,7 @@ $moreClasses = $moreIsActive
 <header class="sticky top-0 z-40 border-b border-slate-200 bg-white/90 backdrop-blur">
   <div class="mx-auto flex max-w-7xl items-center justify-between gap-2 px-4 py-3 sm:gap-3 sm:px-6 lg:flex-nowrap">
     <a href="dashboard.php" class="flex min-w-0 shrink-0 items-center gap-3 rounded-xl focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900" aria-label="Tenant System dashboard">
-      <span class="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-slate-900 font-black text-white">TS</span>
+      <img class="w-10"  src="/tenant-system/public/assets/urbahan-logo.png" alt="">
       <span class="min-w-0 leading-tight">
         <span class="block truncate font-extrabold text-slate-900">Urbahan</span>
         <span class="block truncate text-xs text-slate-500">
