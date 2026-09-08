@@ -19,8 +19,8 @@ class TenantService
         $stmt = $this->pdo->prepare("
             SELECT t.*, r.id AS room_id, r.room_number
             FROM tenants t
-            JOIN rooms r ON t.room_id = r.id
-            WHERE t.id = ? AND r.admin_id = ?
+            LEFT JOIN rooms r ON t.room_id = r.id
+            WHERE t.id = ? AND t.admin_id = ?
         ");
         $stmt->execute([$tenantId, $adminId]);
 
@@ -227,26 +227,65 @@ class TenantService
        ===================================================== */
     public function updateTenant(int $tenantId, array $data, int $adminId): void
     {
+        if ($tenantId <= 0 || $adminId <= 0) {
+            throw new RuntimeException('Invalid tenant update request.');
+        }
+
         $this->assertTenantOwnership($tenantId, $adminId);
 
-        // Safe defaults
-        $fullName   = trim($data['full_name'] ?? '');
-        $phone      = trim($data['phone'] ?? '');
-        $email      = trim($data['email'] ?? '');
-        $moveInDate = $data['move_in_date'] ?? null;
+        $fullName = is_scalar($data['full_name'] ?? null)
+            ? trim((string)$data['full_name'])
+            : '';
+        $phone = is_scalar($data['phone'] ?? null)
+            ? trim((string)$data['phone'])
+            : '';
+        $email = is_scalar($data['email'] ?? null)
+            ? trim((string)$data['email'])
+            : '';
+        $moveInDate = is_scalar($data['move_in_date'] ?? null)
+            ? trim((string)$data['move_in_date'])
+            : '';
+
+        if ($fullName === '') {
+            throw new RuntimeException('Tenant name is required.');
+        }
+
+        if ($email !== '' && filter_var($email, FILTER_VALIDATE_EMAIL) === false) {
+            throw new RuntimeException('Invalid tenant email address.');
+        }
+
+        $moveInDateObject = DateTimeImmutable::createFromFormat('!Y-m-d', $moveInDate);
+        $dateErrors = DateTimeImmutable::getLastErrors();
+        $hasDateErrors = $dateErrors !== false && (
+            $dateErrors['warning_count'] > 0 ||
+            $dateErrors['error_count'] > 0
+        );
+
+        if (
+            $moveInDateObject === false ||
+            $hasDateErrors ||
+            $moveInDateObject->format('Y-m-d') !== $moveInDate
+        ) {
+            throw new RuntimeException('Invalid move-in date.');
+        }
 
         $stmt = $this->pdo->prepare("
             UPDATE tenants
-            SET full_name = ?, phone = ?, email = ?, move_in_date = ?
-            WHERE id = ?
+            SET full_name = ?, phone = ?, email = ?, move_in_date = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND admin_id = ?
         ");
-        $stmt->execute([
+        $updated = $stmt->execute([
             $fullName,
             $phone,
             $email,
             $moveInDate,
-            $tenantId
+            $tenantId,
+            $adminId,
         ]);
+
+        if (!$updated) {
+            throw new RuntimeException('Tenant details could not be updated.');
+        }
 
         if (function_exists('logAudit')) {
             try {
@@ -255,7 +294,9 @@ class TenantService
                     'TENANT_UPDATED',
                     "Tenant #{$tenantId} details updated."
                 );
-            } catch (Throwable $ignored) {}
+            } catch (Throwable $ignored) {
+                // A successful update must not be undone by an audit failure.
+            }
         }
     }
 

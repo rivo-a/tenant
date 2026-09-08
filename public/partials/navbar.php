@@ -60,7 +60,7 @@ $moreClasses = $moreIsActive
       <?php nav_link('tenants.php', 'Tenants', 'tenants', $active); ?>
       <?php nav_link('rooms.php', 'Rooms', 'rooms', $active); ?>
 
-      <details id="desktopMore" class="relative shrink-0" <?= $moreIsActive ? 'open' : '' ?>>
+      <details id="desktopMore" class="relative shrink-0">
         <summary class="min-h-11 inline-flex cursor-pointer list-none items-center justify-center rounded-xl border px-3 py-2 text-sm font-semibold transition active:translate-y-px focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900 <?= $moreClasses ?>">
           More <span aria-hidden="true" class="ml-1 text-xs">⌄</span>
         </summary>

@@ -1,33 +1,56 @@
 <?php
 declare(strict_types=1);
-session_start();
 
 require_once __DIR__ . '/../core/bootstrap.php';
 
-/* ================= AUTH ================= */
-if (!isset($_SESSION['admin_id'])) {
-    header("Location: login.php");
-    exit;
+require_login();
+requireCaretaker();
+
+$pdo = getDB();
+$adminId = current_admin_id();
+$timezone = new DateTimeZone('Africa/Kampala');
+$today = new DateTimeImmutable('today', $timezone);
+$currentMonth = $today->format('Y-m');
+
+$readScalar = static function (array $source, string $key, string $default = ''): string {
+    $value = $source[$key] ?? $default;
+    return is_scalar($value) ? trim((string)$value) : $default;
+};
+$search = $readScalar($_GET, 'search');
+$status = strtolower($readScalar($_GET, 'status', 'active'));
+if (!in_array($status, ['active', 'exited', 'all'], true)) {
+    $status = 'active';
 }
-$admin_id = (int) $_SESSION['admin_id'];
 
-/* ================= INPUTS ================= */
-$search  = trim((string)($_GET['search'] ?? ''));
-$status  = (string)($_GET['status'] ?? 'active'); // active | exited | all
-
-/* ================= HELPERS ================= */
-if (!function_exists('e')) {
-    function e($v): string { return htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8'); }
-}
-function money($v): string { return number_format((float)$v, 0); }
-
-function paymentStatus(array $t): string
+function money($value): string
 {
-    if ((float)$t['paid_this_month'] >= (float)$t['effective_rent']) {
+    return number_format((float)$value, 0, '.', ',');
+}
+
+function paymentStatus(array $tenant, DateTimeImmutable $today): string
+{
+    $rent = (float)($tenant['effective_rent'] ?? 0);
+    $paid = (float)($tenant['paid_this_month'] ?? 0);
+
+    if ($rent <= 0) {
+        return 'Rent missing';
+    }
+
+    if ($paid >= $rent) {
         return 'Paid';
     }
-    $day = (int)date('d');
-    return $day > 5 ? 'Overdue' : 'Due';
+
+    $dueDateValue = trim((string)($tenant['rent_due_date'] ?? ''));
+    $dueDate = DateTimeImmutable::createFromFormat('!Y-m-d', $dueDateValue, $today->getTimezone());
+    $dateErrors = DateTimeImmutable::getLastErrors();
+    $hasDateErrors = $dateErrors !== false && (
+        $dateErrors['warning_count'] > 0 ||
+        $dateErrors['error_count'] > 0
+    );
+
+    return $dueDate !== false && !$hasDateErrors && $dueDate < $today
+        ? 'Overdue'
+        : 'Due';
 }
 
 function chip(string $label, string $tone): string
@@ -36,46 +59,84 @@ function chip(string $label, string $tone): string
         'slate' => 'bg-slate-100 text-slate-700 ring-slate-200',
         'green' => 'bg-emerald-50 text-emerald-700 ring-emerald-200',
         'amber' => 'bg-amber-50 text-amber-700 ring-amber-200',
-        'red'   => 'bg-red-50 text-red-700 ring-red-200',
-        'blue'  => 'bg-sky-50 text-sky-700 ring-sky-200',
+        'red' => 'bg-red-50 text-red-700 ring-red-200',
+        'blue' => 'bg-sky-50 text-sky-700 ring-sky-200',
     ];
-    $cls = $map[$tone] ?? $map['slate'];
-    return '<span class="inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ring-inset '.$cls.'">'.e($label).'</span>';
+    $classes = $map[$tone] ?? $map['slate'];
+
+    return '<span class="inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ring-inset ' . $classes . '">' . e($label) . '</span>';
 }
 
-/* ================= QUERY ================= */
+function lastPaidLabel(?string $date, DateTimeZone $timezone): string
+{
+    if (!$date) {
+        return '—';
+    }
+
+    try {
+        return (new DateTimeImmutable($date, new DateTimeZone('UTC')))
+            ->setTimezone($timezone)
+            ->format('d M Y');
+    } catch (Throwable $ignored) {
+        return '—';
+    }
+}
+
+$rentExpression = "COALESCE(
+    NULLIF(t.monthly_rent, 0),
+    NULLIF(r.monthly_rent, 0),
+    rt.default_monthly_rent,
+    0
+)";
+
 $sql = "
-SELECT
-    t.id AS tenant_id,
-    t.full_name,
-    t.phone,
-    t.status AS tenant_status,
-    t.created_at,
-    r.room_number,
-    r.monthly_rent AS room_rent_override,
-    rt.name AS room_type,
-    COALESCE(r.monthly_rent, rt.default_monthly_rent) AS effective_rent,
-    MAX(p.payment_date) AS last_payment_date,
-    COALESCE(SUM(
-        CASE
-            WHEN strftime('%Y-%m', p.payment_date) = strftime('%Y-%m', 'now')
-            THEN p.amount
-            ELSE 0
-        END
-    ), 0) AS paid_this_month
-FROM tenants t
-JOIN rooms r ON r.id = t.room_id
-JOIN room_types rt ON rt.id = r.room_type_id
-LEFT JOIN payments p ON p.tenant_id = t.id
-WHERE t.admin_id = :admin_id
+    SELECT
+        t.id AS tenant_id,
+        t.full_name,
+        t.phone,
+        LOWER(COALESCE(t.status, 'active')) AS tenant_status,
+        t.exit_date,
+        t.move_in_date,
+        t.rent_due_date,
+        t.created_at,
+        r.room_number,
+        rt.name AS room_type,
+        {$rentExpression} AS effective_rent,
+        MAX(p.payment_date) AS last_payment_date,
+        COALESCE(SUM(
+            CASE
+                WHEN p.payment_month = :payment_month THEN p.amount
+                ELSE 0
+            END
+        ), 0) AS paid_this_month,
+        MAX(
+            0,
+            {$rentExpression} - COALESCE(SUM(
+                CASE
+                    WHEN p.payment_month = :balance_month THEN p.amount
+                    ELSE 0
+                END
+            ), 0)
+        ) AS outstanding_balance
+    FROM tenants t
+    LEFT JOIN rooms r ON r.id = t.room_id
+    LEFT JOIN room_types rt ON rt.id = r.room_type_id
+    LEFT JOIN payments p
+        ON p.tenant_id = t.id
+       AND p.admin_id = :payment_admin_id
+    WHERE t.admin_id = :admin_id
 ";
 
-$params = ['admin_id' => $admin_id];
+$params = [
+    ':payment_month' => $currentMonth,
+    ':balance_month' => $currentMonth,
+    ':payment_admin_id' => $adminId,
+    ':admin_id' => $adminId,
+];
 
-/* ---- filters ---- */
-if ($status !== 'all' && in_array($status, ['active','exited'], true)) {
-    $sql .= " AND t.status = :status ";
-    $params['status'] = $status;
+if ($status !== 'all') {
+    $sql .= ' AND LOWER(COALESCE(t.status, \'active\')) = :tenant_status';
+    $params[':tenant_status'] = $status;
 }
 
 if ($search !== '') {
@@ -86,271 +147,149 @@ if ($search !== '') {
             OR r.room_number LIKE :search
         )
     ";
-    $params['search'] = "%{$search}%";
+    $params[':search'] = '%' . $search . '%';
 }
 
 $sql .= "
-GROUP BY t.id
-ORDER BY t.created_at DESC
+    GROUP BY
+        t.id,
+        t.full_name,
+        t.phone,
+        t.status,
+        t.exit_date,
+        t.move_in_date,
+        t.rent_due_date,
+        t.created_at,
+        r.room_number,
+        rt.name,
+        t.monthly_rent,
+        r.monthly_rent,
+        rt.default_monthly_rent
+    ORDER BY t.created_at DESC, t.id DESC
 ";
 
 $stmt = $pdo->prepare($sql);
 $stmt->execute($params);
 $tenants = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
-/* ================= ARREARS (FAST: 1 QUERY FOR ALL TENANTS) ================= */
-$arrearsByTenant = [];
-
-if ($tenants) {
-    $tenantIds = array_map(fn($x) => (int)$x['tenant_id'], $tenants);
-    $tenantIds = array_values(array_unique(array_filter($tenantIds)));
-
-    if ($tenantIds) {
-        $placeholders = implode(',', array_fill(0, count($tenantIds), '?'));
-
-        // NOTE: your original logic tried to join rent_schedule with payments this month.
-        // We preserve the intent: arrears for "current month" from rent_schedule vs payments this month.
-        $arrearsStmt = $pdo->prepare("
-            SELECT
-                r.tenant_id,
-                SUM(r.amount_due - COALESCE(p.amount_paid, 0)) AS arrears
-            FROM rent_schedule r
-            LEFT JOIN (
-                SELECT tenant_id, strftime('%Y-%m', payment_date) AS month, SUM(amount) AS amount_paid
-                FROM payments
-                GROUP BY tenant_id, month
-            ) p
-              ON p.tenant_id = r.tenant_id
-             AND r.month = p.month
-            WHERE r.tenant_id IN ($placeholders)
-              AND r.month = strftime('%Y-%m','now')
-            GROUP BY r.tenant_id
-        ");
-        $arrearsStmt->execute($tenantIds);
-        $rows = $arrearsStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
-
-        foreach ($rows as $row) {
-            $arrearsByTenant[(int)$row['tenant_id']] = (float)($row['arrears'] ?? 0);
-        }
-    }
-}
-
-function lastPaidLabel(?string $date): string
-{
-    if (!$date) return '—';
-    $ts = strtotime($date);
-    if (!$ts) return '—';
-    return date('d M Y', $ts);
-}
-
-$activeNav = 'tenants';
+$success = is_scalar($_SESSION['success'] ?? null) ? trim((string)$_SESSION['success']) : '';
+unset($_SESSION['success']);
+$active = 'tenants';
 ?>
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Tenants</title>
-
-  <!-- Fonts -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-
-  <!-- Tailwind (compiled, no CDN) -->
   <link rel="stylesheet" href="assets/css/tailwind.css">
 </head>
-
 <body class="min-h-screen bg-slate-50 text-slate-900">
+  <?php require __DIR__ . '/partials/navbar.php'; ?>
 
-  <?php
-  $active = $activeNav; // navbar.php expects $active
-  $navPath = __DIR__ . '/partials/navbar.php';
-  if (is_file($navPath)) require $navPath;
-  ?>
-
-  <main class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-6">
-
-    <!-- Header -->
-    <div class="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+  <main class="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+    <header class="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
       <div>
-        <h1 class="text-2xl font-bold tracking-tight font-alt">Tenants</h1>
-        <p class="mt-1 text-sm text-slate-600">
-          Search tenants, check payment status, and manage tenant actions.
-        </p>
+        <h1 class="font-alt text-2xl font-bold tracking-tight">Tenants</h1>
+        <p class="mt-1 text-sm text-slate-600">Search tenants, check payment status, and manage tenant actions.</p>
       </div>
-
       <div class="flex flex-wrap items-center gap-2">
-        <a href="payments.php"
-           class="inline-flex items-center rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">
-          Receive Payment
-        </a>
-        <a href="tenant_payments.php"
-           class="inline-flex items-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">
-          Tenant Payments
-        </a>
+        <a href="tenant_control.php" class="inline-flex min-h-11 items-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900">Onboard tenant</a>
+        <a href="payments.php" class="inline-flex min-h-11 items-center rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900">Receive payment</a>
+        <a href="tenant_payments.php" class="inline-flex min-h-11 items-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900">Tenant payments</a>
       </div>
-    </div>
+    </header>
 
-    <!-- Filters -->
+    <?php if ($success): ?>
+      <div class="mb-5 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900" role="status"><?= e($success) ?></div>
+    <?php endif; ?>
+
     <form method="get" class="mb-5 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
       <div class="grid grid-cols-1 gap-3 md:grid-cols-3">
         <div>
-          <label class="mb-1 block text-xs font-semibold text-slate-600">Search</label>
-          <input
-            type="text"
-            name="search"
-            value="<?= e($search) ?>"
-            placeholder="Name, phone, room..."
-            class="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-400"
-          />
+          <label for="search" class="mb-1 block text-xs font-semibold text-slate-600">Search</label>
+          <input id="search" type="search" name="search" value="<?= e($search) ?>" placeholder="Name, phone, room..." class="min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-200">
         </div>
-
         <div>
-          <label class="mb-1 block text-xs font-semibold text-slate-600">Status</label>
-          <select
-            name="status"
-            class="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-400"
-          >
+          <label for="status" class="mb-1 block text-xs font-semibold text-slate-600">Status</label>
+          <select id="status" name="status" class="min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-200">
             <option value="active" <?= $status === 'active' ? 'selected' : '' ?>>Active</option>
             <option value="exited" <?= $status === 'exited' ? 'selected' : '' ?>>Exited</option>
             <option value="all" <?= $status === 'all' ? 'selected' : '' ?>>All</option>
           </select>
         </div>
-
         <div class="flex items-end gap-2">
-          <button class="w-full inline-flex items-center justify-center rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">
-            Filter
-          </button>
-
+          <button type="submit" class="inline-flex min-h-11 w-full items-center justify-center rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900">Apply filters</button>
           <?php if ($search !== '' || $status !== 'active'): ?>
-            <a href="tenants.php"
-               class="inline-flex w-full items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">
-              Reset
-            </a>
+            <a href="tenants.php" class="inline-flex min-h-11 w-full items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900">Reset</a>
           <?php endif; ?>
         </div>
       </div>
     </form>
 
-    <!-- Table -->
-    <div class="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
-      <div class="px-4 py-4 border-b border-slate-200 flex items-center justify-between">
-        <div>
-          <h2 class="text-lg font-bold font-alt">Tenant List</h2>
-          <p class="text-sm text-slate-600">
-            Showing <?= (int)count($tenants) ?> tenant(s).
-          </p>
-        </div>
+    <section class="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm" aria-labelledby="tenant-list-title">
+      <div class="border-b border-slate-200 px-4 py-4">
+        <h2 id="tenant-list-title" class="font-alt text-lg font-bold">Tenant list</h2>
+        <p class="mt-1 text-sm text-slate-600">Showing <?= (int)count($tenants) ?> tenant(s) for <?= e($currentMonth) ?>.</p>
       </div>
 
       <div class="overflow-x-auto">
-        <table class="min-w-full text-sm">
+        <table class="min-w-[960px] w-full text-sm">
+          <caption class="sr-only">Tenant rent and management actions</caption>
           <thead class="bg-slate-50 text-slate-600">
             <tr>
-              <th class="px-4 py-3 text-left font-semibold">Tenant</th>
-              <th class="px-4 py-3 text-left font-semibold">Room</th>
-              <th class="px-4 py-3 text-left font-semibold">Rent</th>
-              <th class="px-4 py-3 text-left font-semibold">Status</th>
-              <th class="px-4 py-3 text-left font-semibold">Payment</th>
-              <th class="px-4 py-3 text-left font-semibold">Last paid</th>
-              <th class="px-4 py-3 text-left font-semibold">Actions</th>
+              <th scope="col" class="px-4 py-3 text-left font-semibold">Tenant</th>
+              <th scope="col" class="px-4 py-3 text-left font-semibold">Room</th>
+              <th scope="col" class="px-4 py-3 text-left font-semibold">Rent</th>
+              <th scope="col" class="px-4 py-3 text-left font-semibold">Status</th>
+              <th scope="col" class="px-4 py-3 text-left font-semibold">Payment</th>
+              <th scope="col" class="px-4 py-3 text-left font-semibold">Last paid</th>
+              <th scope="col" class="px-4 py-3 text-left font-semibold">Actions</th>
             </tr>
           </thead>
-
           <tbody class="divide-y divide-slate-100">
             <?php if (!$tenants): ?>
-              <tr>
-                <td colspan="7" class="px-4 py-6">
-                  <div class="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-4 text-sm text-slate-700">
-                    No tenants found.
-                  </div>
-                </td>
-              </tr>
+              <tr><td colspan="7" class="px-4 py-8"><div class="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-5 text-center text-sm text-slate-700">No tenants found.</div></td></tr>
             <?php endif; ?>
 
-            <?php foreach ($tenants as $t): ?>
+            <?php foreach ($tenants as $tenant): ?>
               <?php
-                $tenantIdRow = (int)$t['tenant_id'];
-                $payStatus = paymentStatus($t);
-
-                $arrears = (float)($arrearsByTenant[$tenantIdRow] ?? 0);
-
-                $tenantChip = ($t['tenant_status'] === 'active')
-                    ? chip('Active', 'blue')
-                    : chip('Exited', 'slate');
-
+                $tenantId = (int)$tenant['tenant_id'];
+                $payStatus = paymentStatus($tenant, $today);
+                $tenantStatus = strtolower((string)($tenant['tenant_status'] ?? 'active'));
+                $outstanding = max(0.0, (float)($tenant['outstanding_balance'] ?? 0));
+                $tenantChip = $tenantStatus === 'active' ? chip('Active', 'blue') : chip('Exited', 'slate');
                 $payChip = match ($payStatus) {
                     'Paid' => chip('Paid', 'green'),
                     'Due' => chip('Due', 'amber'),
+                    'Rent missing' => chip('Rent missing', 'red'),
                     default => chip('Overdue', 'red'),
                 };
-
-                $arrearsLine = ($arrears > 0)
-                    ? '<div class="mt-1 text-xs text-red-700">Arrears: UGX '.e(number_format($arrears, 0)).'</div>'
-                    : '';
               ?>
-              <tr class="hover:bg-slate-50">
-                <td class="px-4 py-3">
-                  <div class="font-semibold"><?= e($t['full_name'] ?? '') ?></div>
-                  <div class="text-xs text-slate-500"><?= e($t['phone'] ?? '') ?></div>
-                </td>
-
-                <td class="px-4 py-3">
-                  <div class="font-semibold"><?= e($t['room_number'] ?? '') ?></div>
-                  <div class="text-xs text-slate-500"><?= e($t['room_type'] ?? '') ?></div>
-                </td>
-
-                <td class="px-4 py-3 font-semibold font-alt">
-                  UGX <?= e(money($t['effective_rent'] ?? 0)) ?>
-                </td>
-
-                <td class="px-4 py-3"><?= $tenantChip ?></td>
-
-                <td class="px-4 py-3">
-                  <?= $payChip ?>
-                  <?= $arrearsLine ?>
-                </td>
-
-                <td class="px-4 py-3 text-slate-700">
-                  <?= e(lastPaidLabel($t['last_payment_date'] ?? null)) ?>
-                </td>
-
-                <td class="px-4 py-3">
+              <tr class="align-top hover:bg-slate-50">
+                <td class="px-4 py-4"><div class="font-semibold text-slate-900"><?= e($tenant['full_name'] ?? '') ?></div><div class="mt-1 text-xs text-slate-500"><?= e($tenant['phone'] ?? 'No phone') ?></div></td>
+                <td class="px-4 py-4"><div class="font-semibold text-slate-900"><?= e($tenant['room_number'] ?? '—') ?></div><div class="mt-1 text-xs text-slate-500"><?= e($tenant['room_type'] ?? 'No room type') ?></div></td>
+                <td class="whitespace-nowrap px-4 py-4 font-alt font-semibold tabular-nums">UGX <?= e(money($tenant['effective_rent'] ?? 0)) ?></td>
+                <td class="px-4 py-4"><?= $tenantChip ?></td>
+                <td class="px-4 py-4"><div><?= $payChip ?></div><?php if ($outstanding > 0): ?><div class="mt-1 text-xs text-red-700">Balance: UGX <?= e(money($outstanding)) ?></div><?php endif; ?></td>
+                <td class="whitespace-nowrap px-4 py-4 text-slate-700"><?= e(lastPaidLabel($tenant['last_payment_date'] ?? null, $timezone)) ?></td>
+                <td class="px-4 py-4">
                   <div class="flex flex-wrap gap-2">
-                    <a class="inline-flex items-center rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50"
-                       href="remind.php?id=<?= $tenantIdRow ?>">
-                      View
-                    </a>
-                    <a class="inline-flex items-center rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50"
-    href="remind.php?tenant_id=<?= (int)$tenantIdRow ?>"
-    
->
-    Remind
-</a>
-
-                    <a class="inline-flex items-center rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50"
-                       href="tenant_edit.php?id=<?= $tenantIdRow ?>">
-                      Edit
-                    </a>
-
-                    <?php if (($t['tenant_status'] ?? '') === 'active'): ?>
-                      <a class="inline-flex items-center rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700 hover:bg-red-100"
-                         href="tenant_exit.php?id=<?= $tenantIdRow ?>"
-                         onclick="return confirm('Exit this tenant?')">
-                        Exit
-                      </a>
+                    <?php if ($tenantStatus === 'active'): ?>
+                      <a class="inline-flex min-h-11 items-center rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900" href="remind.php?tenant_id=<?= $tenantId ?>">Remind</a>
+                    <?php endif; ?>
+                    <a class="inline-flex min-h-11 items-center rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900" href="tenant_edit.php?id=<?= $tenantId ?>">Edit</a>
+                    <?php if ($tenantStatus === 'active'): ?>
+                      <a class="inline-flex min-h-11 items-center rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700 hover:bg-red-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-700" href="tenant_exit.php?id=<?= $tenantId ?>" onclick="return confirm('Exit this tenant?')">Exit</a>
                     <?php endif; ?>
                   </div>
                 </td>
               </tr>
             <?php endforeach; ?>
           </tbody>
-
         </table>
       </div>
-    </div>
-
+    </section>
   </main>
 </body>
 </html>
