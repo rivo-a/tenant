@@ -127,3 +127,4 @@ LOG READY
 [2026-09-04 03:55:59] ERROR: A non-numeric value encountered in C:\xampp\htdocs\tenant-system\public\audit_logs.php on line 232
 [2026-09-04 03:55:59] ERROR: A non-numeric value encountered in C:\xampp\htdocs\tenant-system\public\audit_logs.php on line 232
 [2026-09-08 19:41:11] FATAL: session_start(): Ignoring session_start() because a session is already active in C:\xampp\htdocs\tenant-system\public\reports.php on line 4
+[2026-09-09 19:24:17] ERROR: Undefined array key "id" in C:\xampp\htdocs\tenant-system\public\tenant_control.php on line 100

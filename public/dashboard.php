@@ -234,8 +234,7 @@ $active = 'dashboard';
   <?php require __DIR__ . '/partials/navbar.php'; ?>
 
   <main class="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
-    <header class="mb-5 flex flex-col gap-4 rounded-2xl border border-slate-200 bg-linear-to-r from-blue-700 to-blue-900 px-5 py-4 shadow-sm sm:px-6 sm:py-5 lg:flex-row lg:items-center lg:justify-between">
-      <div class="min-w-0">
+    <header class="mb-5 flex flex-col gap-4 rounded-2xl border border-slate-200 bg-gradient-to-r from-slate-900 via-blue-950 to-slate-900 px-5 py-4 text-white shadow-sm sm:px-6 sm:py-5 lg:flex-row lg:items-center lg:justify-between">  <div class="min-w-0">
         <div class="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs font-semibold text-slate-500">
           <span>Operations overview</span>
           <span aria-hidden="true" class="text-slate-300">•</span>

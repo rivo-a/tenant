@@ -15,10 +15,13 @@ if ($adminId <= 0) {
 
 $paymentService = new PaymentService($pdo);
 $allowedStatuses = ['all', 'pending', 'confirmed', 'done'];
+
+// --- Helper Closures ---
 $getString = static function (string $key, string $default = ''): string {
     $value = $_GET[$key] ?? $default;
     return is_scalar($value) ? trim((string)$value) : $default;
 };
+
 $redirectState = static function (string $status, string $search, int $paymentId = 0): string {
     $query = array_filter([
         'status' => $status !== 'all' ? $status : '',
@@ -29,6 +32,7 @@ $redirectState = static function (string $status, string $search, int $paymentId
     return 'payment_verification.php' . ($query ? '?' . http_build_query($query) : '');
 };
 
+// --- Request Handling ---
 $status = strtolower($getString('status', 'all'));
 $status = in_array($status, $allowedStatuses, true) ? $status : 'all';
 $search = $getString('q');
@@ -62,12 +66,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $_SESSION['success'] = 'Payment verification marked done.';
         }
     } catch (Throwable $e) {
-        $_SESSION['verification_error'] = $e->getMessage();
+        // SECURITY: Log the actual error for debugging, show a generic message to the user
+        error_log('Payment Verification Error [' . $adminId . ']: ' . $e->getMessage());
+        $_SESSION['verification_error'] = 'An unexpected error occurred while processing the verification. Please try again.';
     }
 
     redirect($redirectState($postStatus, $postSearch, $postPaymentId));
 }
 
+// --- State & Data Fetching ---
 $success = is_scalar($_SESSION['success'] ?? null) ? trim((string)$_SESSION['success']) : '';
 $error = is_scalar($_SESSION['verification_error'] ?? null) ? trim((string)$_SESSION['verification_error']) : '';
 $verificationCode = is_scalar($_SESSION['verification_code'] ?? null) ? (string)$_SESSION['verification_code'] : '';
@@ -78,6 +85,7 @@ $dailyCodeError = '';
 try {
     $dailyCode = $paymentService->getDailyVerificationCode();
 } catch (Throwable $e) {
+    error_log('Daily Code Error: ' . $e->getMessage());
     $dailyCodeError = 'The daily verification code is not configured.';
 }
 
@@ -87,10 +95,16 @@ try {
         ? $paymentService->getVerificationPayment($selectedId, $adminId)
         : null;
 } catch (Throwable $e) {
+    error_log('Queue Fetch Error: ' . $e->getMessage());
     $queue = [];
     $selectedPayment = null;
     $error = $error !== '' ? $error : 'Unable to refresh the verification queue. Try again.';
 }
+
+// PERFORMANCE: Hard limit the queue in PHP to prevent memory exhaustion. 
+// (Ideally, pass $limit and $offset to getVerificationQueue() and handle pagination in the DB).
+$QUEUE_LIMIT = 100; 
+$queue = array_slice($queue, 0, $QUEUE_LIMIT);
 
 $groupOrder = ['pending', 'confirmed', 'done'];
 $queueGroups = [];
@@ -105,11 +119,14 @@ foreach ($groupOrder as $groupStatus) {
     ));
 }
 
+// --- Formatting Closures ---
 $money = static fn(float $amount): string => 'UGX ' . number_format($amount, 0, '.', ',');
+
 $monthLabel = static function (string $month): string {
     $date = DateTimeImmutable::createFromFormat('!Y-m-d', $month . '-01');
     return $date ? $date->format('F Y') : $month;
 };
+
 $verificationLabel = static function (string $value): string {
     return match (strtolower($value)) {
         'pending' => 'Pending',
@@ -118,6 +135,7 @@ $verificationLabel = static function (string $value): string {
         default => ucfirst($value),
     };
 };
+
 $verificationClasses = static function (string $value): string {
     return match (strtolower($value)) {
         'pending' => 'bg-amber-50 text-amber-800 ring-amber-200',
@@ -126,6 +144,7 @@ $verificationClasses = static function (string $value): string {
         default => 'bg-slate-100 text-slate-700 ring-slate-200',
     };
 };
+
 $paymentStatusLabel = static function (string $value): string {
     return match (strtolower($value)) {
         'paid' => 'Paid',
@@ -134,19 +153,29 @@ $paymentStatusLabel = static function (string $value): string {
         default => ucfirst($value),
     };
 };
+
+// PERFORMANCE: Instantiate DateTimeZone only once using a static variable
 $formatEventTime = static function (?string $value): string {
     if (!$value) {
         return '—';
     }
+    
+    static $tzKampala = null;
+    static $tzUtc = null;
+    if ($tzKampala === null) {
+        $tzKampala = new DateTimeZone('Africa/Kampala');
+        $tzUtc = new DateTimeZone('UTC');
+    }
 
     try {
-        return (new DateTimeImmutable($value, new DateTimeZone('UTC')))
-            ->setTimezone(new DateTimeZone('Africa/Kampala'))
+        return (new DateTimeImmutable($value, $tzUtc))
+            ->setTimezone($tzKampala)
             ->format('d M Y, H:i') . ' EAT';
     } catch (Throwable $ignored) {
         return '—';
     }
 };
+
 $pendingCount = count($queueGroups['pending'] ?? []);
 $confirmedCount = count($queueGroups['confirmed'] ?? []);
 $doneCount = count($queueGroups['done'] ?? []);
@@ -172,10 +201,57 @@ $active = 'payments';
       </div>
       <div class="rounded-xl bg-slate-900 px-4 py-3 text-white shadow-sm">
         <p class="text-xs font-semibold text-slate-300">Today’s code</p>
-        <?php if ($dailyCode): ?>
-          <p class="mt-1 font-alt text-2xl font-bold tracking-[0.2em] tabular-nums"><?= e($dailyCode) ?></p>
-          <p class="mt-1 text-xs text-slate-300">Valid until midnight EAT</p>
-        <?php else: ?>
+         <?php if ($dailyCode): ?>
+    <div class="mt-2 flex items-center gap-3">
+        <div
+            class="rounded-xl border border-white/10 bg-black/20 px-4 py-2.5 shadow-inner"
+        >
+            <p class="font-alt text-2xl font-bold tracking-[0.2em] tabular-nums">
+                <span id="daily-code-masked">••••</span>
+
+                <span id="daily-code-real" hidden>
+                    <?= e($dailyCode) ?>
+                </span>
+            </p>
+        </div>
+
+        <button
+            type="button"
+            id="toggle-code-btn"
+            class="inline-flex items-center gap-1.5 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-xs font-medium text-slate-200 transition hover:bg-white/10 hover:text-white focus:outline-none focus:ring-2 focus:ring-white/50 active:scale-95"
+            aria-label="Show verification code"
+        >
+            <svg
+                xmlns="http://www.w3.org/2000/svg"
+                class="h-4 w-4"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+            >
+                <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    d="M2.458 12C3.732 7.943 7.523 5 12 5
+                       c4.478 0 8.268 2.943 9.542 7
+                       -1.274 4.057-5.064 7-9.542 7
+                       -4.477 0-8.268-2.943-9.542-7z"
+                />
+                <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
+                />
+            </svg>
+
+            <span>Show code</span>
+        </button>
+    </div>
+
+    <p class="mt-2 text-xs text-slate-300">
+        Valid until midnight EAT
+    </p>
+<?php else: ?>
           <p class="mt-1 text-sm font-semibold text-amber-200">Unavailable</p>
           <p class="mt-1 text-xs text-slate-300">Set the server secret to enable confirmation.</p>
         <?php endif; ?>
@@ -185,12 +261,14 @@ $active = 'payments';
     <?php if ($success): ?>
       <div class="mb-5 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900" role="status" aria-live="polite"><?= e($success) ?></div>
     <?php endif; ?>
+    
     <?php if ($error): ?>
       <div class="mb-5 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900" role="alert">
-        <p class="font-semibold"><?= e(str_contains($error, 'verification code') ? 'The code could not be confirmed' : $error) ?></p>
+        <p class="font-semibold"><?= e(str_contains($error, 'verification code') || str_contains($error, 'unexpected error') ? 'Action could not be completed' : $error) ?></p>
         <?php if (str_contains($error, 'verification code')): ?><p class="mt-1">Check today’s code and try again.</p><?php endif; ?>
       </div>
     <?php endif; ?>
+    
     <?php if ($dailyCodeError): ?>
       <div class="mb-5 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900" role="alert"><?= e($dailyCodeError) ?></div>
     <?php endif; ?>
@@ -258,6 +336,7 @@ $active = 'payments';
                 </div>
               </div>
             <?php endforeach; ?>
+            
             <?php if (!$hasQueueItems): ?>
               <div class="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center text-sm text-slate-700">
                 <p class="font-semibold text-slate-900"><?= $search !== '' || $status !== 'all' ? 'No matching payments' : 'No payments need verification' ?></p>
@@ -325,13 +404,15 @@ $active = 'payments';
                   <input type="hidden" name="payment_id" value="<?= (int)$selectedPayment['id'] ?>">
                   <input type="hidden" name="status" value="<?= e($status) ?>">
                   <input type="hidden" name="q" value="<?= e($search) ?>">
+                  
                   <label for="verification_code" class="block text-sm font-semibold text-slate-800">Today’s verification code</label>
                   <div class="flex flex-col gap-3 sm:flex-row">
-                    <input id="verification_code" name="verification_code" value="<?= e($verificationCode) ?>" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{4}" maxlength="4" placeholder="4 digits" required class="min-h-11 w-full rounded-xl border <?= $error && str_contains($error, 'verification code') ? 'border-red-400 ring-2 ring-red-100' : 'border-slate-300' ?> bg-white px-3 py-2 text-sm tracking-[0.2em] outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-200 sm:max-w-xs" aria-describedby="verification-hint <?= $error && str_contains($error, 'verification code') ? 'verification-code-error' : '' ?>">
-                    <button type="submit" class="inline-flex min-h-11 items-center justify-center rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900">Confirm payment</button>
+                    <input id="verification_code" name="verification_code" value="<?= e($verificationCode) ?>" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{4}" maxlength="4" placeholder="4 digits" required class="min-h-11 w-full rounded-xl border <?= $error && str_contains($error, 'could not be completed') ? 'border-red-400 ring-2 ring-red-100' : 'border-slate-300' ?> bg-white px-3 py-2 text-sm tracking-[0.2em] outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-200 sm:max-w-xs" aria-describedby="verification-hint <?= $error && str_contains($error, 'could not be completed') ? 'verification-code-error' : '' ?>">
+                    
+                    <button type="submit" class="inline-flex min-h-11 items-center justify-center rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900" onclick="this.disabled=true; this.innerText='Processing...';">Confirm payment</button>
                   </div>
                   <p id="verification-hint" class="text-xs text-slate-500">Use today’s 4-digit code. The payment stays Pending if the code does not match.</p>
-                  <?php if ($error && str_contains($error, 'verification code')): ?><p id="verification-code-error" class="text-sm font-medium text-red-700" role="alert">Check today’s code and try again.</p><?php endif; ?>
+                  <?php if ($error && str_contains($error, 'could not be completed')): ?><p id="verification-code-error" class="text-sm font-medium text-red-700" role="alert">Check today’s code and try again.</p><?php endif; ?>
                 </form>
               </div>
             <?php elseif ($detailStatus === 'confirmed'): ?>
@@ -343,7 +424,7 @@ $active = 'payments';
                   <input type="hidden" name="payment_id" value="<?= (int)$selectedPayment['id'] ?>">
                   <input type="hidden" name="status" value="<?= e($status) ?>">
                   <input type="hidden" name="q" value="<?= e($search) ?>">
-                  <button type="submit" class="inline-flex min-h-11 w-full items-center justify-center rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900 sm:w-auto">Mark done</button>
+                  <button type="submit" class="inline-flex min-h-11 w-full items-center justify-center rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900 sm:w-auto" onclick="this.disabled=true; this.innerText='Processing...';">Mark done</button>
                 </form>
               </div>
             <?php else: ?>
@@ -354,5 +435,7 @@ $active = 'payments';
       </div>
     </section>
   </main>
+
+ <script src="assets/js/verification.js"></script>
 </body>
 </html>
