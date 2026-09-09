@@ -108,10 +108,13 @@ class TenantService
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
-    /* =====================================================
-       TENANT CREATION (SAFE)
+        /* =====================================================
+       TENANT CREATION (SAFE + PORTAL CREDENTIALS)
        ===================================================== */
-    public function addTenant(array $data, int $adminId): int
+    /**
+     * @return array{tenant_id: int, temp_password: string}
+     */
+    public function addTenant(array $data, int $adminId): array
     {
         try {
             if (!$this->pdo->inTransaction()) {
@@ -127,6 +130,15 @@ class TenantService
 
             if ($fullName === '') {
                 throw new Exception("Tenant name is required.");
+            }
+
+            // NEW: Phone is now strictly required for portal authentication
+            if ($phone === '') {
+                throw new Exception("Phone number is required for portal access.");
+            }
+            // Basic phone format validation (adjust regex to match your local format, e.g., Uganda +256 or 07...)
+            if (!preg_match('/^[0-9\+\-\s]{7,15}$/', $phone)) {
+                throw new Exception("Invalid phone number format.");
             }
 
             if (!$roomId) {
@@ -161,7 +173,16 @@ class TenantService
             $monthlyRent = (float)($room['effective_monthly_rent'] ?? 0);
             $monthlyRentValue = $monthlyRent > 0 ? $monthlyRent : null;
 
-            // ===== INSERT TENANT WITH OWNERSHIP, RENT SNAPSHOT, AND DUE DATE =====
+            // ===== GENERATE SECURE TEMPORARY PASSWORD =====
+            // Excludes confusing characters like 0, O, 1, l, I
+            $chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
+            $tempPassword = '';
+            for ($i = 0; $i < 8; $i++) {
+                $tempPassword .= $chars[random_int(0, strlen($chars) - 1)];
+            }
+            $passwordHash = password_hash($tempPassword, PASSWORD_DEFAULT);
+
+            // ===== INSERT TENANT WITH OWNERSHIP, RENT SNAPSHOT, AND PORTAL SECURITY COLUMNS =====
             $stmt = $this->pdo->prepare("
                 INSERT INTO tenants (
                     admin_id,
@@ -173,8 +194,11 @@ class TenantService
                     rent_due_date,
                     monthly_rent,
                     status,
+                    password_hash,
+                    account_status,
+                    must_change_password,
                     created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', CURRENT_TIMESTAMP)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, 'password_reset_required', 1, CURRENT_TIMESTAMP)
             ");
             $stmt->execute([
                 $adminId,
@@ -184,7 +208,8 @@ class TenantService
                 $email,
                 $moveInDate,
                 $moveInDate,
-                $monthlyRentValue
+                $monthlyRentValue,
+                $passwordHash
             ]);
 
             $tenantId = (int)$this->pdo->lastInsertId();
@@ -212,7 +237,11 @@ class TenantService
 
             $this->pdo->commit();
 
-            return $tenantId;
+            // NEW: Return both the ID and the plain-text password for the admin to see ONCE
+            return [
+                'tenant_id'     => $tenantId,
+                'temp_password' => $tempPassword
+            ];
 
         } catch (Throwable $e) {
             if ($this->pdo->inTransaction()) {

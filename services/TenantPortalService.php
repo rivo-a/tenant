@@ -173,8 +173,16 @@ class TenantPortalService
                 ];
             }
 
-            $amount = (float)($payment['amount'] ?? 0);
-            $grouped[$month]['paid'] = round((float)$grouped[$month]['paid'] + $amount, 2);
+                        $amount = (float)($payment['amount'] ?? 0);
+            $vStatus = strtolower((string)($payment['verification_status'] ?? 'done'));
+
+            // CRITICAL FIX: Only count 'confirmed' or 'done' payments towards the paid balance.
+            // 'pending' payments are still listed below so the tenant can see them, 
+            // but they do not reduce the balance until an admin verifies them.
+            if (in_array($vStatus, ['confirmed', 'done'], true)) {
+                $grouped[$month]['paid'] = round((float)$grouped[$month]['paid'] + $amount, 2);
+            }
+
             $grouped[$month]['payments'][] = [
                 'id' => (int)$payment['id'],
                 'payment_month' => $month,
@@ -182,7 +190,7 @@ class TenantPortalService
                 'amount' => $amount,
                 'method' => strtolower((string)($payment['method'] ?? '')),
                 'note' => trim((string)($payment['note'] ?? '')),
-                'verification_status' => strtolower((string)($payment['verification_status'] ?? 'done')),
+                'verification_status' => $vStatus,
                 'verification_confirmed_at' => $payment['verification_confirmed_at'] ?? null,
                 'verification_done_at' => $payment['verification_done_at'] ?? null,
             ];
