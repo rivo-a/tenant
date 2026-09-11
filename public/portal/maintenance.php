@@ -10,6 +10,10 @@ if (getenv('APP_ENV') !== 'production') {
     error_reporting(0);
 }
 
+ini_set('display_errors', '1');
+ini_set('display_startup_errors', '1');
+error_reporting(E_ALL);
+
 require_once __DIR__ . '/../../config/config.php';
 require_once __DIR__ . '/../../core/tenant_auth.php';
 require_once __DIR__ . '/../../services/MaintenanceService.php';
@@ -302,7 +306,66 @@ function getMaintenanceStatusBadge(string $status): string {
         </div>
     </div>
 
-    <!-- External JS for CSP Compliance -->
-    <script src="/tenant-system/public/assets/js/maintenance.js" defer></script>
+        <!-- CSP-Compliant Inline Script -->
+    <script nonce="<?= e(csp_nonce()) ?>">
+        alert('JS IS RUNNING!');
+
+        document.addEventListener('DOMContentLoaded', function () {
+            const modal = document.getElementById('newRequestModal');
+            const openBtn = document.getElementById('openModalBtn');
+            
+            // Elements that close the modal
+            const closeBtns = [
+                document.getElementById('closeModalBtn'),
+                document.getElementById('cancelModalBtn'),
+                document.getElementById('modalBackdrop')
+            ];
+
+            const form = document.getElementById('maintenanceForm');
+            const submitBtn = document.getElementById('submitBtn');
+            const submitLabel = document.getElementById('submitLabel');
+            const submitSpinner = document.getElementById('submitSpinner');
+
+            // 1. Open Modal
+            if (openBtn && modal) {
+                openBtn.addEventListener('click', function () {
+                    modal.classList.remove('hidden');
+                });
+            }
+
+            // 2. Close Modal
+            closeBtns.forEach(btn => {
+                if (btn && modal) {
+                    btn.addEventListener('click', function () {
+                        modal.classList.add('hidden');
+                        if (form) form.reset();
+                    });
+                }
+            });
+
+            // 3. Close on Escape Key
+            document.addEventListener('keydown', function (e) {
+                if (e.key === 'Escape' && modal && !modal.classList.contains('hidden')) {
+                    modal.classList.add('hidden');
+                }
+            });
+
+            // 4. Form Submission Loading State
+            if (form && submitBtn) {
+                form.addEventListener('submit', function () {
+                    if (!form.checkValidity()) return;
+                    submitBtn.disabled = true;
+                    submitLabel.textContent = 'Submitting...';
+                    if (submitSpinner) submitSpinner.classList.remove('hidden');
+                });
+            }
+
+            // 5. Auto-open modal if PHP validation failed (red text exists)
+            if (document.querySelector('.text-red-600') && modal) {
+                modal.classList.remove('hidden');
+            }
+        });
+    </script>
+
 </body>
 </html>
