@@ -100,16 +100,38 @@ class MaintenanceService
 
     /**
      * Get all maintenance requests for a specific tenant (Strictly scoped).
+     * Now supports filtering and fetching the latest admin note.
      */
-    public function getTenantRequests(int $tenantId): array
+    public function getTenantRequests(int $tenantId, string $filter = 'all'): array
     {
-        $stmt = $this->pdo->prepare("
-            SELECT id, category, description, attachment_path, status, created_at, updated_at
-            FROM maintenance_requests
-            WHERE tenant_id = :tenant_id
-            ORDER BY created_at DESC
-        ");
-        $stmt->execute(['tenant_id' => $tenantId]);
+        $sql = "
+            SELECT 
+                mr.id, 
+                mr.category, 
+                mr.description, 
+                mr.attachment_path, 
+                mr.status, 
+                mr.created_at, 
+                mr.updated_at,
+                (SELECT message FROM maintenance_request_updates 
+                 WHERE request_id = mr.id AND actor_type = 'admin' 
+                 ORDER BY created_at DESC LIMIT 1) as admin_notes
+            FROM maintenance_requests mr
+            WHERE mr.tenant_id = :tenant_id
+        ";
+        
+        $params = ['tenant_id' => $tenantId];
+
+        if ($filter === 'open') {
+            $sql .= " AND mr.status IN ('submitted', 'acknowledged', 'in_progress')";
+        } elseif ($filter === 'resolved') {
+            $sql .= " AND mr.status IN ('resolved', 'closed')";
+        }
+
+        $sql .= " ORDER BY mr.created_at DESC";
+
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute($params);
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
