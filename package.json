@@ -5,7 +5,8 @@
   "main": "tailwind.config.js",
   "scripts": {
     "build:css": "npx @tailwindcss/cli -i ./assets/css/input.css -o ./public/assets/css/tailwind.css --minify",
-    "watch:css": "npx @tailwindcss/cli -i ./assets/css/input.css -o ./public/assets/css/tailwind.css --watch"
+    "watch:css": "npx @tailwindcss/cli -i ./assets/css/input.css -o ./public/assets/css/tailwind.css --watch" ,
+    "build": "npx tailwindcss -i ./assets/css/input.css -o ./assets/css/tailwind.css --minify"
   },
   "keywords": [],
   "author": "",
