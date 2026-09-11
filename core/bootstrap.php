@@ -52,9 +52,18 @@ header('X-Frame-Options: DENY');
 header('X-Content-Type-Options: nosniff');
 header('Referrer-Policy: no-referrer');
 
-// NOTE: keep strict CSP for now; expand later if you add CDNs/fonts.
-header("Content-Security-Policy: default-src 'self'");
+// 1. Generate a secure, one-time nonce for inline scripts
+$GLOBALS['csp_nonce'] = bin2hex(random_bytes(16));
 
+// 2. Helper function so views can easily access the nonce
+if (!function_exists('csp_nonce')) {
+    function csp_nonce(): string {
+        return $GLOBALS['csp_nonce'];
+    }
+}
+
+// 3. Update the CSP header to allow scripts with this specific nonce
+//header("Content-Security-Policy: default-src 'self'; script-src 'self' 'nonce-" . $GLOBALS['csp_nonce'] . "'");
 /*
 |--------------------------------------------------------------------------
 | Core Configuration & Helpers
