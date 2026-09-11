@@ -244,10 +244,7 @@ if (!$rooms) {
 
     <title>Onboard Tenant</title>
 
-    <link
-        rel="stylesheet"
-        href="assets/css/tailwind.css"
-    >
+    <link rel="stylesheet" href="/tenant-system/public/assets/css/tailwind.css">
 </head>
 
 <body class="min-h-screen bg-slate-50 text-slate-900">
@@ -260,15 +257,15 @@ require __DIR__ . '/partials/navbar.php';
 
 ?>
 
-<main class="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+<main class="mx-auto max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
 
     <!-- ================================================================
          PAGE HEADER
          ================================================================ -->
 
-    <header class="mb-7 overflow-hidden rounded-3xl border border-slate-200 bg-gradient-to-br from-slate-950 via-blue-950 to-indigo-950 text-white shadow-lg">
+    <header class="mb-6 overflow-hidden rounded-2xl border border-slate-800 bg-gradient-to-br from-slate-950 via-blue-950 to-indigo-950 text-white shadow-md">
 
-        <div class="relative px-5 py-6 sm:px-7 sm:py-7">
+        <div class="relative px-5 py-5 sm:px-6 sm:py-6">
 
             <!-- Decorative glow -->
 
@@ -280,11 +277,11 @@ require __DIR__ . '/partials/navbar.php';
                 class="pointer-events-none absolute -bottom-20 left-1/3 h-48 w-48 rounded-full bg-indigo-500/10 blur-3xl"
             ></div>
 
-            <div class="relative flex flex-col gap-6 sm:flex-row sm:items-center sm:justify-between">
+            <div class="relative flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
 
                 <div>
 
-                    <div class="mb-3 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-medium text-blue-100 backdrop-blur">
+                    <div class="mb-2 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-medium text-blue-100 backdrop-blur">
 
                         <span class="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-500/20 text-emerald-300">
 
@@ -309,11 +306,11 @@ require __DIR__ . '/partials/navbar.php';
 
                     </div>
 
-                    <h1 class="font-alt text-2xl font-bold tracking-tight sm:text-3xl">
+                    <h1 class="font-sans text-2xl font-bold tracking-tight sm:text-[28px]">
                         Add New Tenant
                     </h1>
 
-                    <p class="mt-2 max-w-2xl text-sm leading-6 text-slate-300">
+                    <p class="mt-1.5 max-w-2xl text-sm leading-6 text-slate-300">
                         Create a tenancy, assign an available room, and securely provision portal access for the tenant.
                     </p>
 
@@ -681,9 +678,9 @@ require __DIR__ . '/partials/navbar.php';
          MAIN ONBOARDING FORM
          ================================================================ -->
 
-    <section class="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
+    <section class="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
 
-        <div class="border-b border-slate-100 bg-slate-50/70 px-5 py-5 sm:px-7">
+        <div class="border-b border-slate-200 bg-slate-50 px-5 py-5 sm:px-7">
 
             <div class="flex flex-col gap-5 md:flex-row md:items-center md:justify-between">
 
@@ -693,7 +690,7 @@ require __DIR__ . '/partials/navbar.php';
                         New tenancy
                     </p>
 
-                    <h2 class="mt-1 font-alt text-xl font-bold text-slate-950">
+                    <h2 class="mt-1 font-sans text-xl font-bold text-slate-950">
                         Tenant information
                     </h2>
 
@@ -703,16 +700,9 @@ require __DIR__ . '/partials/navbar.php';
 
                 </div>
 
-                <div class="flex items-center gap-2 text-xs text-slate-500">
-
-                    <span class="flex h-7 w-7 items-center justify-center rounded-full bg-blue-100 font-bold text-blue-700">
-                        01
-                    </span>
-
-                    <span class="hidden sm:block">
-                        Account setup
-                    </span>
-
+                <div class="hidden items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 shadow-sm sm:flex">
+                    <span class="h-1.5 w-1.5 rounded-full bg-emerald-500"></span>
+                    Portal account included
                 </div>
 
             </div>
@@ -1015,17 +1005,17 @@ require __DIR__ . '/partials/navbar.php';
                  TENANCY DETAILS
                  ========================================================= -->
 
-            <div class="border-t border-slate-100 bg-slate-50/50 px-5 py-6 sm:px-7">
+            <div class="border-t border-slate-200 bg-slate-50/60 px-5 py-6 sm:px-7">
 
                 <div class="mb-5 flex items-center justify-between gap-4">
 
                     <div>
 
                         <p class="text-xs font-bold uppercase tracking-[0.16em] text-blue-600">
-                            Step 02
+                            Tenancy
                         </p>
 
-                        <h3 class="mt-1 font-alt text-lg font-bold text-slate-950">
+                        <h3 class="mt-1 font-sans text-lg font-bold text-slate-950">
                             Tenancy details
                         </h3>
 
@@ -1191,9 +1181,9 @@ require __DIR__ . '/partials/navbar.php';
                  PORTAL ACCESS PREVIEW
                  ========================================================= -->
 
-            <div class="border-t border-slate-100 px-5 py-6 sm:px-7">
+            <div class="border-t border-slate-200 px-5 py-6 sm:px-7">
 
-                <div class="rounded-2xl border border-blue-100 bg-blue-50/60 p-5">
+                <div class="rounded-xl border border-blue-200 bg-blue-50/70 p-5">
 
                     <div class="flex items-start gap-3">
 
@@ -1289,7 +1279,7 @@ require __DIR__ . '/partials/navbar.php';
                  ACTION AREA
                  ========================================================= -->
 
-            <div class="border-t border-slate-100 bg-white px-5 py-5 sm:px-7">
+            <div class="border-t border-slate-200 bg-white px-5 py-5 sm:px-7">
 
                 <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
 
@@ -1324,7 +1314,7 @@ require __DIR__ . '/partials/navbar.php';
                         name="onboard_tenant"
                         value="1"
                         <?= !$rooms ? 'disabled' : '' ?>
-                        class="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-950 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-950 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
+                        class="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-blue-700 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
                     >
 
                         <svg
@@ -1343,9 +1333,14 @@ require __DIR__ . '/partials/navbar.php';
 
                         </svg>
 
-                        <span>
-                            Create tenant &amp; generate credentials
+                        <span id="submit-label">
+                            Create tenant &amp; generate portal access
                         </span>
+
+                        <svg id="submit-spinner" class="hidden h-4 w-4 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
+                        </svg>
 
                     </button>
 
@@ -1366,97 +1361,75 @@ require __DIR__ . '/partials/navbar.php';
 
 <script>
 document.addEventListener('DOMContentLoaded', function () {
-
     const copyButton = document.getElementById('copy-temp-password');
     const copyLabel = document.getElementById('copy-label');
     const copyIcon = document.getElementById('copy-icon');
+    const form = document.getElementById('tenantOnboardingForm');
+    const submitButton = document.getElementById('tenantOnboardingSubmit');
+    const submitLabel = document.getElementById('submit-label');
+    const submitSpinner = document.getElementById('submit-spinner');
 
-    if (!copyButton || !copyLabel || !copyIcon) {
-        return;
+    if (copyButton && copyLabel && copyIcon) {
+        const password = <?= json_encode(
+            $tempPassword,
+            JSON_HEX_TAG |
+            JSON_HEX_APOS |
+            JSON_HEX_AMP |
+            JSON_HEX_QUOT
+        ) ?>;
+
+        copyButton.addEventListener('click', async function () {
+            if (!password) return;
+
+            try {
+                if (navigator.clipboard && window.isSecureContext) {
+                    await navigator.clipboard.writeText(password);
+                } else {
+                    const helper = document.createElement('textarea');
+                    helper.value = password;
+                    helper.setAttribute('readonly', '');
+                    helper.style.position = 'fixed';
+                    helper.style.opacity = '0';
+                    document.body.appendChild(helper);
+                    helper.select();
+                    document.execCommand('copy');
+                    helper.remove();
+                }
+
+                copyLabel.textContent = 'Copied';
+                copyIcon.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />';
+                copyButton.classList.remove('bg-white', 'text-slate-900');
+                copyButton.classList.add('bg-emerald-500', 'text-white');
+
+                window.setTimeout(function () {
+                    copyLabel.textContent = 'Copy password';
+                    copyIcon.innerHTML = '<rect width="13" height="13" x="9" y="9" rx="2" /><path stroke-linecap="round" stroke-linejoin="round" d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />';
+                    copyButton.classList.remove('bg-emerald-500', 'text-white');
+                    copyButton.classList.add('bg-white', 'text-slate-900');
+                }, 2000);
+            } catch (error) {
+                copyLabel.textContent = 'Copy failed';
+                window.setTimeout(function () {
+                    copyLabel.textContent = 'Copy password';
+                }, 2000);
+            }
+        });
     }
 
-    const password = <?= json_encode(
-        $tempPassword,
-        JSON_HEX_TAG |
-        JSON_HEX_APOS |
-        JSON_HEX_AMP |
-        JSON_HEX_QUOT
-    ) ?>;
+    if (form && submitButton && submitLabel && submitSpinner) {
+        form.addEventListener('submit', function () {
+            if (submitButton.disabled) return;
+            submitButton.disabled = true;
+            submitLabel.textContent = 'Creating tenant…';
+            submitSpinner.classList.remove('hidden');
+        });
+    }
 
-    copyButton.addEventListener('click', async function () {
-
-        if (!password) {
-            return;
-        }
-
-        try {
-
-            await navigator.clipboard.writeText(password);
-
-            copyLabel.textContent = 'Copied!';
-
-            copyIcon.innerHTML = `
-                <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    d="M5 13l4 4L19 7"
-                />
-            `;
-
-            copyButton.classList.remove(
-                'bg-white',
-                'text-slate-900'
-            );
-
-            copyButton.classList.add(
-                'bg-emerald-500',
-                'text-white'
-            );
-
-            setTimeout(function () {
-
-                copyLabel.textContent = 'Copy password';
-
-                copyIcon.innerHTML = `
-                    <rect
-                        width="13"
-                        height="13"
-                        x="9"
-                        y="9"
-                        rx="2"
-                    />
-
-                    <path
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                        d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"
-                    />
-                `;
-
-                copyButton.classList.remove(
-                    'bg-emerald-500',
-                    'text-white'
-                );
-
-                copyButton.classList.add(
-                    'bg-white',
-                    'text-slate-900'
-                );
-
-            }, 2000);
-
-        } catch (error) {
-
-            copyLabel.textContent = 'Copy failed';
-
-            setTimeout(function () {
-                copyLabel.textContent = 'Copy password';
-            }, 2000);
-
-        }
-
-    });
-
+    const firstInvalid = document.querySelector('[aria-invalid="true"]');
+    if (firstInvalid) {
+        firstInvalid.focus({ preventScroll: true });
+        firstInvalid.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
 });
 </script>
 
