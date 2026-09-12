@@ -130,4 +130,5 @@ LOG READY
 [2026-09-09 19:24:17] ERROR: Undefined array key "id" in C:\xampp\htdocs\tenant-system\public\tenant_control.php on line 100
 [2026-09-11 09:21:25] ERROR: Undefined array key "id" in C:\xampp\htdocs\tenant-system\public\tenant_control.php on line 170
 [2026-09-11 09:48:56] ERROR: Undefined array key "id" in C:\xampp\htdocs\tenant-system\public\tenant_control.php on line 170
+[2026-09-11 21:05:15] ERROR: Undefined array key "id" in C:\xampp\htdocs\tenant-system\public\tenant_control.php on line 170
 [2026-09-11 20:35:03] EXCEPTION: SQLSTATE[HY000]: General error: 1 no such column: al.admin_id in C:\xampp\htdocs\tenant-system\public\audit_logs.php on line 41

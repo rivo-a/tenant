@@ -9,7 +9,7 @@ if (is_file($composerAutoload)) {
     require_once $composerAutoload;
 }
 
-if (class_exists('Dotenv\\Dotenv')) {
+if (class_exists('Dotenv\Dotenv')) {
     try {
         \Dotenv\Dotenv::createImmutable(BASE_PATH)->safeLoad();
     } catch (Throwable $ignored) {
@@ -22,20 +22,22 @@ if (class_exists('Dotenv\\Dotenv')) {
 | Application Bootstrap (Hardened)
 |--------------------------------------------------------------------------
 */
-
 require_once __DIR__ . '/error_handler.php';
 
 /*
 |--------------------------------------------------------------------------
 | Secure Session Configuration
 |--------------------------------------------------------------------------
-| Must be set BEFORE session_start()
 */
 if (session_status() !== PHP_SESSION_ACTIVE) {
+    // Detect HTTPS even behind reverse proxies (Cloudflare, Nginx, etc.)
+    $isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || 
+               (!empty($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https');
+
     session_set_cookie_params([
         'lifetime' => 0,
         'path'     => '/',
-        'secure'   => !empty($_SERVER['HTTPS']),
+        'secure'   => $isHttps,
         'httponly' => true,
         'samesite' => 'Strict',
     ]);
@@ -52,25 +54,26 @@ header('X-Frame-Options: DENY');
 header('X-Content-Type-Options: nosniff');
 header('Referrer-Policy: no-referrer');
 
-// 1. Generate a secure, one-time nonce for inline scripts
+// Generate a secure, one-time nonce for inline scripts
 $GLOBALS['csp_nonce'] = bin2hex(random_bytes(16));
 
-// 2. Helper function so views can easily access the nonce
 if (!function_exists('csp_nonce')) {
     function csp_nonce(): string {
-        return $GLOBALS['csp_nonce'];
+        return $GLOBALS['csp_nonce'] ?? '';
     }
 }
 
-// 3. Update the CSP header to allow scripts with this specific nonce
-//header("Content-Security-Policy: default-src 'self'; script-src 'self' 'nonce-" . $GLOBALS['csp_nonce'] . "'");
+// Enforce CSP with the generated nonce (uncommented and fixed)
+// Note: Add 'unsafe-inline' to style-src only if you absolutely need it for Tailwind/legacy CSS
+header("Content-Security-Policy: default-src 'self'; script-src 'self' 'nonce-" . csp_nonce() . "'; style-src 'self' 'unsafe-inline';");
+
 /*
 |--------------------------------------------------------------------------
 | Core Configuration & Helpers
 |--------------------------------------------------------------------------
 */
 require_once __DIR__ . '/../config/config.php';
-require_once __DIR__ . '/../config/database.php';   // provides getDB() (Option A)
+require_once __DIR__ . '/../config/database.php';   // NOW properly provides getDB()
 require_once __DIR__ . '/helpers.php';              // redirect(), e(), require_login(), etc.
 require_once __DIR__ . '/csrf.php';
 require_once __DIR__ . '/permissions.php';          // requireRole(), requireCaretaker(), isSuperAdmin()
@@ -88,7 +91,6 @@ if (!function_exists('humanDate')) {
         }
 
         $timestamp = strtotime($date);
-
         if ($timestamp === false) {
             return '—';
         }
@@ -101,19 +103,24 @@ if (!function_exists('humanDate')) {
 }
 
 /**
- * Audit logger (Option A friendly)
+ * Audit logger (Fail-safe)
  * Call: logAudit($adminId, 'ACTION', 'Description...')
  */
 if (!function_exists('logAudit')) {
     function logAudit(int $adminId, string $action, string $description): void
     {
-        $pdo = getDB();
-
-        $stmt = $pdo->prepare(
-            "INSERT INTO audit_logs (admin_id, action, description)
-             VALUES (?, ?, ?)"
-        );
-        $stmt->execute([$adminId, $action, $description]);
+        try {
+            $pdo = getDB();
+            $stmt = $pdo->prepare(
+                "INSERT INTO audit_logs (admin_id, action, description)
+                 VALUES (?, ?, ?)"
+            );
+            $stmt->execute([$adminId, $action, $description]);
+        } catch (Throwable $e) {
+            // Fail silently for audit logs so the main user action isn't blocked
+            // In production, you might want to send this to a log file instead
+            error_log("Audit log failed for admin {$adminId}: " . $e->getMessage());
+        }
     }
 }
 ?>
