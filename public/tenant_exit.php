@@ -1,15 +1,13 @@
 <?php
-session_start();
+require_once __DIR__ . '/../core/bootstrap.php';
 
-if (!isset($_SESSION['admin_id'])) {
-    header("Location: login.php");
-    exit;
-}
+require_login();
+require_capability('tenants.manage');
 
-$pdo = require __DIR__ . '/../config/database.php';
+$pdo = getDB();
 
 $tenantId = isset($_GET['id']) ? (int) $_GET['id'] : 0;
-$adminId = (int) $_SESSION['admin_id'];
+$adminId = current_business_id();
 
 if ($tenantId <= 0) {
     die("Invalid tenant ID.");

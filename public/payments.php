@@ -6,6 +6,7 @@ require_once __DIR__ . '/../services/PaymentService.php';
 require_once __DIR__ . '/tenant_filter.php';
 
 require_login();
+require_capability('payments.record');
 
 /**
  * Fetch room types from DB so filters always match this administrator's data.
@@ -31,7 +32,7 @@ function paymentStatuses(): array
 }
 
 $pdo = getDB();
-$admin_id = current_admin_id();
+$admin_id = current_business_id();
 if ($admin_id <= 0) {
     http_response_code(403);
     exit('Access denied: admin session not found.');

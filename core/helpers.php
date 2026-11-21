@@ -50,11 +50,21 @@ if (!function_exists('current_admin_id')) {
 }
 
 if (!function_exists('current_admin_role')) {
+    /**
+     * Role normalised onto the current vocabulary. Once core/auth.php is
+     * loaded this is the value stored in the database, not the one cached in
+     * the session at login time.
+     */
     function current_admin_role(): string
     {
+        if (function_exists('auth_role')) {
+            return auth_role();
+        }
+
         if (isset($_SESSION['admin']['role'])) {
             return (string)$_SESSION['admin']['role'];
         }
+
         return (string)($_SESSION['admin_role'] ?? 'caretaker');
     }
 }

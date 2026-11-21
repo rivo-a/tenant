@@ -8,14 +8,10 @@ $currentPage = basename($_SERVER['PHP_SELF']);
         <div class="flex h-16 justify-between items-center">
             <div class="flex items-center gap-8">
                 <span class="text-xl font-bold tracking-tight font-alt text-slate-900">Tenant Portal</span>
-                <div class="hidden sm:flex sm:space-x-6">
+                <div class="flex flex-wrap gap-x-6 gap-y-1 sm:space-x-6 sm:gap-y-0">
                     <a href="/tenant-system/public/portal/dashboard.php" 
                        class="<?= $currentPage === 'dashboard.php' ? 'border-slate-900 text-slate-900' : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-700' ?> inline-flex items-center border-b-2 px-1 pt-1 text-sm font-medium transition">
-                        Dashboard
-                    </a>
-                    <a href="/tenant-system/public/portal/payments.php" 
-                       class="<?= $currentPage === 'payments.php' ? 'border-slate-900 text-slate-900' : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-700' ?> inline-flex items-center border-b-2 px-1 pt-1 text-sm font-medium transition">
-                        Payments
+                        My rent
                     </a>
                     <a href="/tenant-system/public/portal/maintenance.php" 
                        class="<?= $currentPage === 'maintenance.php' ? 'border-slate-900 text-slate-900' : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-700' ?> inline-flex items-center border-b-2 px-1 pt-1 text-sm font-medium transition">

@@ -7,7 +7,9 @@ if (!isLoggedIn()) {
     redirect('login.php');
 }
 
-$admin_id = (int)($_SESSION['admin_id'] ?? 0);
+require_capability('rooms.manage');
+
+$admin_id = current_business_id();
 
 /* =============================
    Flash Messages (PRG Safe)

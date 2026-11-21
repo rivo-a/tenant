@@ -40,6 +40,14 @@ if (!function_exists('payment_pending_sql')) {
     }
 }
 
+if (!function_exists('payment_reversed_sql')) {
+    /** A reversed payment keeps its row but never counts as money. */
+    function payment_reversed_sql(string $payment = 'p'): string
+    {
+        return "LOWER(COALESCE({$payment}.verification_status, 'done')) = 'reversed'";
+    }
+}
+
 if (!function_exists('payment_month_sql')) {
     /** Billing month a payment is allocated to, not the day it was handed over. */
     function payment_month_sql(string $payment = 'p'): string
@@ -70,13 +78,20 @@ if (!function_exists('rent_months_due')) {
             return 1;
         }
 
+        /*
+         * Both ends are normalised to the application timezone before the
+         * diff. Without this, a CLI script or a caller in another zone can
+         * land on a different month boundary and bill one month too few.
+         */
+        $appTimezone = new DateTimeZone('Africa/Kampala');
+
         try {
-            $start = room_rent_month(new DateTimeImmutable($raw));
+            $start = room_rent_month((new DateTimeImmutable($raw))->setTimezone($appTimezone));
         } catch (Throwable $ignored) {
             return 1;
         }
 
-        $end = room_rent_month($asOf);
+        $end = room_rent_month($asOf->setTimezone($appTimezone));
         if ($start > $end) {
             return 0;
         }

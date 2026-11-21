@@ -9,7 +9,9 @@ if (!isLoggedIn()) {
     redirect('login.php');
 }
 
-$admin_id = (int)($_SESSION['admin_id'] ?? 0);
+require_capability('payments.view');
+
+$admin_id = current_business_id();
 
 /* ================= INPUT ================= */
 $search    = trim((string)($_GET['search'] ?? ''));

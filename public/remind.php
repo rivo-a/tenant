@@ -52,10 +52,9 @@ $smsTitle = 'Rent Reminder';
    ========================================================= */
 
 require_login();
+require_capability('tenants.manage');
 
-$adminId = (int)(
-    $_SESSION['admin_id'] ?? 0
-);
+$adminId = current_business_id();
 
 if ($adminId <= 0) {
     http_response_code(403);
@@ -77,13 +76,16 @@ if (!$db instanceof PDO) {
    5. HELPERS
    ========================================================= */
 
-function e(?string $value): string
-{
-    return htmlspecialchars(
-        $value ?? '',
-        ENT_QUOTES,
-        'UTF-8'
-    );
+if (!function_exists('e')) {
+    /* core/helpers.php already provides e(); redeclaring it fatals the page. */
+    function e(?string $value): string
+    {
+        return htmlspecialchars(
+            $value ?? '',
+            ENT_QUOTES,
+            'UTF-8'
+        );
+    }
 }
 
 function money(float $amount): string
@@ -999,14 +1001,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             $adminId,
                             'SMS_REMINDER_SENT',
                             sprintf(
-                                'Rent reminder SMS sent to tenant ID %d (%s), phone %s, outstanding balance %s, SMS log ID %d, SMS.UG token %s.',
+                                'Rent reminder SMS sent to tenant ID %d (%s), phone %s, outstanding balance %s, SMS log ID %d, provider message id %s.',
                                 $tenantId,
                                 $tenantName,
                                 $normalizedPhone,
                                 money($outstandingBalance),
                                 $smsLogId,
-                                $providerToken ?? 'N/A'
-                            )
+                                $providerToken !== null && $providerToken !== '' ? 'recorded in SMS log' : 'not returned'
+                            ),
+                            [
+                                'target_type' => 'tenant',
+                                'target_id' => $tenantId,
+                                'owner_admin_id' => $adminId,
+                            ]
                         );
 
                     } catch (Throwable $e) {

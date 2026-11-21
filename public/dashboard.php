@@ -8,8 +8,10 @@ if (!isLoggedIn()) {
     redirect('login.php');
 }
 
+require_capability('dashboard.view');
+
 $pdo = getDB();
-$admin_id = current_admin_id();
+$admin_id = current_business_id();
 if ($admin_id <= 0) {
     http_response_code(403);
     exit('Access denied.');

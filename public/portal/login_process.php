@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/../../config/config.php';
+require_once __DIR__ . '/../../core/audit.php';
 
 if (session_status() === PHP_SESSION_NONE) {
     $isSecure = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off');
@@ -31,31 +32,30 @@ try {
 
     // Fetch tenant by phone
     $stmt = $pdo->prepare("
-        SELECT id, full_name, password_hash, account_status, 
-               must_change_password, login_attempts, locked_until 
-        FROM tenants 
-        WHERE phone = :phone 
+        SELECT id, admin_id, full_name, password_hash, account_status,
+               must_change_password, login_attempts, locked_until
+        FROM tenants
+        WHERE phone = :phone
         LIMIT 1
     ");
     $stmt->execute(['phone' => $phone]);
     $tenant = $stmt->fetch(PDO::FETCH_ASSOC);
 
-    // --- AUDIT HELPER ---
-    $logAudit = function (string $action, ?int $actorId = null, ?string $details = null) use ($pdo): void {
+    // --- AUDIT HELPER (shared writer, fail-safe for sign-in) ---
+    $logAudit = function (string $action, ?int $actorId = null, ?string $details = null) use ($pdo, $tenant): void {
         try {
-            $ip = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
-            $stmt = $pdo->prepare("
-                INSERT INTO audit_logs (actor_type, actor_id, action, target_type, target_id, details, ip_address)
-                VALUES ('tenant', :actor_id, :action, 'tenant', :target_id, :details, :ip)
-            ");
-            $stmt->execute([
-                'actor_id'  => $actorId ?? 0,
-                'action'    => $action,
+            audit_write($pdo, [
+                'action' => $action,
+                'actor_type' => 'tenant',
+                'actor_id' => $actorId ?? 0,
+                'target_type' => 'tenant',
                 'target_id' => $actorId ?? 0,
-                'details'   => $details,
-                'ip'        => $ip
+                'details' => $details,
+                'owner_admin_id' => isset($tenant['admin_id']) ? (int)$tenant['admin_id'] : null,
             ]);
-        } catch (Throwable $ignored) {}
+        } catch (Throwable $ignored) {
+            // Sign-in must not fail because audit storage is unavailable.
+        }
     };
 
     // --- CHECK IF TENANT EXISTS ---

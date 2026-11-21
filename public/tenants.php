@@ -4,10 +4,10 @@ declare(strict_types=1);
 require_once __DIR__ . '/../core/bootstrap.php';
 
 require_login();
-requireCaretaker();
+require_capability('tenants.manage');
 
 $pdo = getDB();
-$adminId = current_admin_id();
+$adminId = current_business_id();
 $timezone = new DateTimeZone('Africa/Kampala');
 $today = new DateTimeImmutable('today', $timezone);
 $currentMonth = $today->format('Y-m');

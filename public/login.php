@@ -4,7 +4,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/../core/bootstrap.php';
 
 if (isLoggedIn()) {
-    redirect('payments.php'); // or dashboard.php if you have it
+    redirect(auth_home_for_role());
 }
 
 $pdo = getDB();
@@ -61,7 +61,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             } catch (Throwable $ignored) {}
         }
 
-        redirect('dashboard.php');
+        // Collectors never see the owner's dashboard; they land on their list.
+        redirect(auth_home_for_role((string)($admin['role'] ?? 'landlord')));
 
     } catch (Throwable $e) {
         $error = $e->getMessage();

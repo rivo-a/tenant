@@ -139,7 +139,9 @@ class PaymentService
                     $method,
                     $note !== '' ? $note : null,
                 ]);
-                $paymentIds[] = (int)$this->pdo->lastInsertId();
+                $paymentId = (int)$this->pdo->lastInsertId();
+                $paymentIds[] = $paymentId;
+                $this->assignReceiptNumber($paymentId, $paymentDateObject->format('Y'));
 
                 if ($firstMonth === null) {
                     $firstMonth = $monthKey;
@@ -183,10 +185,15 @@ class PaymentService
                 $adminId,
                 'PAYMENT_CREATED_PENDING',
                 sprintf(
-                    'Payment of UGX %s for tenant #%d was recorded and queued for verification.',
+                    'Payment of UGX %s for tenant #%d was recorded and queued for verification. Receipts: %s.',
                     number_format($allocatedAmount, 2),
-                    $tenantId
-                )
+                    $tenantId,
+                    implode(', ', $paymentIds)
+                ),
+                [
+                    'target_type' => 'payment',
+                    'target_id' => (int)($paymentIds[0] ?? 0),
+                ]
             );
 
             return $result;
@@ -328,7 +335,12 @@ class PaymentService
             throw $e;
         }
 
-        $this->audit($adminId, 'PAYMENT_CONFIRMED', "Payment #{$paymentId} was confirmed with the daily verification code.");
+        $this->audit(
+            $adminId,
+            'PAYMENT_CONFIRMED',
+            "Payment #{$paymentId} was confirmed with the daily verification code.",
+            ['target_type' => 'payment', 'target_id' => $paymentId]
+        );
     }
 
     public function markPaymentDone(int $paymentId, int $adminId): void
@@ -367,7 +379,94 @@ class PaymentService
             throw $e;
         }
 
-        $this->audit($adminId, 'PAYMENT_MARKED_DONE', "Payment #{$paymentId} verification was completed.");
+        $this->audit(
+            $adminId,
+            'PAYMENT_MARKED_DONE',
+            "Payment #{$paymentId} verification was completed.",
+            ['target_type' => 'payment', 'target_id' => $paymentId]
+        );
+    }
+
+    /**
+     * Stable reference, generated once per payment row.
+     * Format: R-<year>-<id padded to six digits>.
+     */
+    private function assignReceiptNumber(int $paymentId, string $year): void
+    {
+        if ($paymentId <= 0) {
+            return;
+        }
+
+        if (!preg_match('/^\d{4}$/', $year)) {
+            $year = date('Y');
+        }
+
+        $receipt = 'R-' . $year . '-' . str_pad((string)$paymentId, 6, '0', STR_PAD_LEFT);
+
+        $stmt = $this->pdo->prepare('UPDATE payments SET receipt_no = :receipt WHERE id = :id');
+        $stmt->execute([':receipt' => $receipt, ':id' => $paymentId]);
+    }
+
+    /**
+     * Reverse a payment without deleting it.
+     *
+     * The row keeps its amount and its receipt; only the status changes, so the
+     * ledger shows what happened and no collected-income total picks it up.
+     * Scope is the calling business, so one landlord cannot reverse another's
+     * payment by guessing an id.
+     */
+    public function reversePayment(int $paymentId, int $adminId, string $reason, ?int $actorId = null): void
+    {
+        if ($paymentId <= 0 || $adminId <= 0) {
+            throw new RuntimeException('Payment record not found.');
+        }
+
+        $reason = trim($reason);
+        if ($reason === '') {
+            throw new RuntimeException('A reason is required to reverse a payment.');
+        }
+        if (strlen($reason) > 160) {
+            throw new RuntimeException('Keep the reversal reason to 160 characters or fewer.');
+        }
+
+        $this->pdo->beginTransaction();
+        try {
+            $stmt = $this->pdo->prepare("
+                UPDATE payments
+                SET verification_status = 'reversed',
+                    reversed_at = CURRENT_TIMESTAMP,
+                    reversed_by = :actor_id,
+                    reversal_reason = :reason
+                WHERE id = :payment_id
+                  AND admin_id = :owner_id
+                  AND LOWER(COALESCE(verification_status, 'done')) <> 'reversed'
+            ");
+            $stmt->execute([
+                ':actor_id' => $actorId ?? $adminId,
+                ':reason' => $reason,
+                ':payment_id' => $paymentId,
+                ':owner_id' => $adminId,
+            ]);
+
+            if ($stmt->rowCount() !== 1) {
+                $this->throwIfStalePayment($paymentId, $adminId);
+                throw new RuntimeException('Payment record not found or already reversed.');
+            }
+
+            $this->pdo->commit();
+        } catch (Throwable $e) {
+            if ($this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+            throw $e;
+        }
+
+        $this->audit(
+            $actorId ?? $adminId,
+            'PAYMENT_REVERSED',
+            "Payment #{$paymentId} was reversed: {$reason}",
+            ['target_type' => 'payment', 'target_id' => $paymentId]
+        );
     }
 
     private function verificationQuerySql(): string
@@ -441,16 +540,18 @@ class PaymentService
         throw new RuntimeException('This payment changed while you were reviewing it.');
     }
 
-    private function audit(int $adminId, string $action, string $description): void
+    /** @param array<string, mixed> $context */
+    private function audit(int $adminId, string $action, string $description, array $context = []): void
     {
         if (!function_exists('logAudit')) {
             return;
         }
 
         try {
-            logAudit($adminId, $action, $description);
+            logAudit($adminId, $action, $description, $context);
         } catch (Throwable $ignored) {
-            // Audit failure must not undo a committed payment transition.
+            // Batch 1 keeps payment auditing best-effort. Batch 2 moves this
+            // write inside the payment transaction so both fail together.
         }
     }
 

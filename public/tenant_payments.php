@@ -3,8 +3,9 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../core/bootstrap.php';
 require_login();
+require_capability('payments.view');
 
-$adminId  = (int)($_SESSION['admin_id'] ?? 0);
+$adminId  = current_business_id();
 $tenantId = (int)($_GET['tenant_id'] ?? 0);
 $q        = trim((string)($_GET['q'] ?? ''));
 $month    = trim((string)($_GET['month'] ?? ''));

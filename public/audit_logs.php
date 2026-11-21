@@ -4,7 +4,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/../core/bootstrap.php';
 
 require_login();
-requireSuperAdmin();
+require_capability('audit.view');
 
 $pdo = getDB();
 
@@ -14,6 +14,10 @@ $action = is_scalar($_GET['action'] ?? null)
 
 $admin = filter_var($_GET['admin'] ?? 0, FILTER_VALIDATE_INT);
 $admin = $admin === false ? 0 : max(0, (int)$admin);
+
+// Business context: the caretaker whose records an event affected.
+$owner = filter_var($_GET['owner'] ?? 0, FILTER_VALIDATE_INT);
+$owner = $owner === false ? 0 : max(0, (int)$owner);
 
 $page = max(1, (int)($_GET['page'] ?? 1));
 $limit = 25;
@@ -50,6 +54,31 @@ if ($admin > 0) {
 
     $params[':actor_type'] = 'admin';
     $params[':admin_id'] = $admin;
+}
+
+if ($owner > 0) {
+    $where[] = 'al.owner_admin_id = :owner_admin_id';
+    $params[':owner_admin_id'] = $owner;
+}
+
+/*
+ * A landlord sees only events about their own business and their own staff.
+ * The platform owner sees everything. This is enforced in SQL, not in the view.
+ */
+if (!isSuperAdmin()) {
+    $businessId = current_business_id();
+
+    if ($businessId <= 0) {
+        deny_access('audit.view', 'No business is linked to this account.');
+    }
+
+    $where[] = '(al.owner_admin_id = :scope_owner'
+        . ' OR al.actor_type = \'tenant\' AND al.actor_id IN (SELECT id FROM tenants WHERE admin_id = :scope_tenant_business)'
+        . ' OR al.actor_id IN (SELECT id FROM admins WHERE id = :scope_self OR landlord_id = :scope_landlord))';
+    $params[':scope_owner'] = $businessId;
+    $params[':scope_tenant_business'] = $businessId;
+    $params[':scope_self'] = $businessId;
+    $params[':scope_landlord'] = $businessId;
 }
 
 $whereSql = $where ? 'WHERE ' . implode(' AND ', $where) : '';
@@ -115,13 +144,18 @@ $logsStmt = $pdo->prepare(
         al.created_at,
 
         a.username,
-        a.full_name
+        a.full_name,
+        o.full_name AS owner_name,
+        o.username AS owner_username
 
      FROM audit_logs al
 
      LEFT JOIN admins a
         ON a.id = al.actor_id
        AND al.actor_type = 'admin'
+
+     LEFT JOIN admins o
+        ON o.id = al.owner_admin_id
 
      {$whereSql}
 
@@ -168,13 +202,28 @@ $summary = $pdo->query(
 |--------------------------------------------------------------------------
 */
 
-$actions = $pdo->query(
-    "SELECT DISTINCT action
+/*
+ * Filter dropdowns are scoped too: a landlord must not learn the names of
+ * other businesses, or of events belonging to them.
+ */
+$scopedBusinessId = isSuperAdmin() ? 0 : current_business_id();
+$scopeFilter = '(owner_admin_id = :scope_b1 OR actor_type = \'tenant\' AND actor_id IN (SELECT id FROM tenants WHERE admin_id = :scope_b2) OR actor_id IN (SELECT id FROM admins WHERE id = :scope_b3 OR landlord_id = :scope_b4))';
+$scopeBind = [
+    ':scope_b1' => $scopedBusinessId,
+    ':scope_b2' => $scopedBusinessId,
+    ':scope_b3' => $scopedBusinessId,
+    ':scope_b4' => $scopedBusinessId,
+];
+
+$actionsSql = "SELECT DISTINCT action
      FROM audit_logs
      WHERE action IS NOT NULL
-       AND action <> ''
-     ORDER BY action"
-)->fetchAll(PDO::FETCH_COLUMN) ?: [];
+       AND action <> ''"
+    . ($scopedBusinessId > 0 ? ' AND ' . $scopeFilter : '')
+    . ' ORDER BY action';
+$actionsStmt = $pdo->prepare($actionsSql);
+$actionsStmt->execute($scopedBusinessId > 0 ? $scopeBind : []);
+$actions = $actionsStmt->fetchAll(PDO::FETCH_COLUMN) ?: [];
 
 /*
 |--------------------------------------------------------------------------
@@ -182,16 +231,33 @@ $actions = $pdo->query(
 |--------------------------------------------------------------------------
 */
 
-$admins = $pdo->query(
-    "SELECT
-        id,
-        username,
-        full_name
+if ($scopedBusinessId > 0) {
+    $adminsStmt = $pdo->prepare(
+        'SELECT id, username, full_name FROM admins
+         WHERE id = :b1 OR landlord_id = :b2
+         ORDER BY full_name, username'
+    );
+    $adminsStmt->execute([':b1' => $scopedBusinessId, ':b2' => $scopedBusinessId]);
+    $admins = $adminsStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
-     FROM admins
+    $businessesStmt = $pdo->prepare(
+        'SELECT id, username, full_name FROM admins
+         WHERE id = :b1
+         ORDER BY full_name, username'
+    );
+    $businessesStmt->execute([':b1' => $scopedBusinessId]);
+    $businesses = $businessesStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+} else {
+    $admins = $pdo->query(
+        'SELECT id, username, full_name FROM admins ORDER BY full_name, username'
+    )->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
-     ORDER BY full_name, username"
-)->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    $businesses = $pdo->query(
+        "SELECT id, username, full_name FROM admins
+         WHERE role IN ('caretaker', 'landlord')
+         ORDER BY full_name, username"
+    )->fetchAll(PDO::FETCH_ASSOC) ?: [];
+}
 
 /*
 |--------------------------------------------------------------------------
@@ -203,6 +269,7 @@ $filterQuery = array_filter(
     [
         'action' => $action,
         'admin'  => $admin > 0 ? $admin : '',
+        'owner'  => $owner > 0 ? $owner : '',
     ],
     static fn($value): bool =>
         $value !== '' && $value !== null
@@ -361,7 +428,7 @@ $active = 'audit';
       class="mb-5 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"
   >
 
-    <div class="grid grid-cols-1 gap-3 md:grid-cols-3">
+    <div class="grid grid-cols-1 gap-3 md:grid-cols-4">
 
       <!-- Action -->
       <div>
@@ -442,6 +509,42 @@ $active = 'audit';
       </div>
 
 
+      <!-- Business (owner) -->
+      <div>
+
+        <label
+            for="owner"
+            class="mb-1 block text-xs font-semibold text-slate-600"
+        >
+          Business
+        </label>
+
+        <select
+            id="owner"
+            name="owner"
+            class="min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 py-3 text-sm outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-200"
+        >
+
+          <option value="">
+            All businesses
+          </option>
+
+          <?php foreach ($businesses as $availableBusiness): ?>
+
+            <option
+                value="<?= (int)$availableBusiness['id'] ?>"
+                <?= (int)$availableBusiness['id'] === $owner ? 'selected' : '' ?>
+            >
+              <?= e($availableBusiness['full_name'] ?: $availableBusiness['username']) ?>
+            </option>
+
+          <?php endforeach; ?>
+
+        </select>
+
+      </div>
+
+
       <!-- Buttons -->
       <div class="flex items-end gap-2">
 
@@ -453,7 +556,7 @@ $active = 'audit';
         </button>
 
 
-        <?php if ($action !== '' || $admin > 0): ?>
+        <?php if ($action !== '' || $admin > 0 || $owner > 0): ?>
 
           <a
               href="audit_logs.php"
@@ -518,7 +621,11 @@ $active = 'audit';
             </th>
 
             <th class="px-4 py-3 text-left font-semibold">
-              Administrator
+              Actor
+            </th>
+
+            <th class="px-4 py-3 text-left font-semibold">
+              Business
             </th>
 
             <th class="px-4 py-3 text-left font-semibold">
@@ -545,7 +652,7 @@ $active = 'audit';
             <tr>
 
               <td
-                  colspan="5"
+                  colspan="6"
                   class="px-4 py-10"
               >
 
@@ -635,6 +742,9 @@ $active = 'audit';
                     : '—';
             }
 
+            $ownerName = trim((string)($log['owner_name'] ?? ''));
+            $ownerUsername = trim((string)($log['owner_username'] ?? ''));
+
             ?>
 
             <tr class="align-top hover:bg-slate-50">
@@ -662,6 +772,36 @@ $active = 'audit';
                   <?= e($actorSecondary) ?>
 
                 </div>
+
+              </td>
+
+
+              <!-- Business -->
+              <td class="px-4 py-4">
+
+                <?php if ($ownerName !== '' || $ownerUsername !== ''): ?>
+
+                  <div class="font-semibold text-slate-900">
+
+                    <?= e($ownerName !== '' ? $ownerName : $ownerUsername) ?>
+
+                  </div>
+
+                  <?php if ($ownerUsername !== '' && $ownerName !== ''): ?>
+
+                    <div class="mt-1 text-xs text-slate-500">
+
+                      <?= e($ownerUsername) ?>
+
+                    </div>
+
+                  <?php endif; ?>
+
+                <?php else: ?>
+
+                  <span class="text-xs text-slate-400">Not recorded</span>
+
+                <?php endif; ?>
 
               </td>
 

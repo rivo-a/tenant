@@ -27,7 +27,7 @@ final class ArrearsService
      *     totals: array{tenants: int, owed_tenants: int, expected: float, verified: float, pending: float, balance: float, overdue_tenants: int, overdue_balance: float}
      * }
      */
-    public function getArrears(int $adminId, int $roomTypeId = 0, ?DateTimeImmutable $asOf = null): array
+    public function getArrears(int $adminId, int $roomTypeId = 0, ?DateTimeImmutable $asOf = null, int $tenantId = 0): array
     {
         $timezone = new DateTimeZone('Africa/Kampala');
         $asOf = ($asOf ?? new DateTimeImmutable('now', $timezone))->setTimezone($timezone);
@@ -53,6 +53,7 @@ final class ArrearsService
         $verifiedExpression = payment_verified_sql('p');
         $pendingExpression = payment_pending_sql('p');
         $roomTypeFilter = $roomTypeId > 0 ? ' AND rt.id = :room_type_id' : '';
+        $tenantFilter = $tenantId > 0 ? ' AND t.id = :tenant_id' : '';
 
         $sql = "
             SELECT
@@ -78,6 +79,7 @@ final class ArrearsService
               AND LOWER(COALESCE(t.status, 'active')) = 'active'
               AND t.exit_date IS NULL
               {$roomTypeFilter}
+              {$tenantFilter}
             GROUP BY
                 t.id,
                 t.full_name,
@@ -99,6 +101,9 @@ final class ArrearsService
         ];
         if ($roomTypeId > 0) {
             $params[':room_type_id'] = $roomTypeId;
+        }
+        if ($tenantId > 0) {
+            $params[':tenant_id'] = $tenantId;
         }
 
         $stmt = $this->pdo->prepare($sql);
@@ -207,6 +212,32 @@ final class ArrearsService
             'rows' => $rows,
             'totals' => $totals,
         ];
+    }
+
+    /**
+     * One tenant's authoritative position, resolved through their own
+     * landlord record. Used by the tenant portal so the balance a tenant sees
+     * is the same figure the landlord's report shows.
+     *
+     * @return array<string, mixed>|null
+     */
+    public function getTenantArrears(int $tenantId, ?DateTimeImmutable $asOf = null): ?array
+    {
+        if ($tenantId <= 0) {
+            return null;
+        }
+
+        $stmt = $this->pdo->prepare('SELECT admin_id FROM tenants WHERE id = :id LIMIT 1');
+        $stmt->execute([':id' => $tenantId]);
+        $adminId = (int)($stmt->fetchColumn() ?: 0);
+
+        if ($adminId <= 0) {
+            return null;
+        }
+
+        $result = $this->getArrears($adminId, 0, $asOf, $tenantId);
+
+        return $result['rows'][0] ?? null;
     }
 
     /**

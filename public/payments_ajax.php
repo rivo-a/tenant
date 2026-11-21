@@ -5,8 +5,9 @@ require_once __DIR__ . '/../core/bootstrap.php';
 require_once __DIR__ . '/tenant_filter.php';
 
 require_login();
+require_capability('payments.view');
 
-$admin_id = current_admin_id();
+$admin_id = current_business_id();
 if ($admin_id <= 0) {
     http_response_code(403);
     exit('Access denied: admin session not found.');

@@ -84,8 +84,19 @@ require_once __DIR__ . '/../config/database.php';   // NOW properly provides get
 require_once __DIR__ . '/helpers.php';              // redirect(), e(), require_login(), etc.
 require_once __DIR__ . '/rent.php';                 // rent + payment expressions, rent propagation
 require_once __DIR__ . '/room_type_colors.php';     // room type colour keys
+require_once __DIR__ . '/audit.php';                // audit_logs writer, redaction, business context
+require_once __DIR__ . '/auth.php';                 // live identity, role vocabulary, business scope
 require_once __DIR__ . '/csrf.php';
-require_once __DIR__ . '/permissions.php';          // requireRole(), requireCaretaker(), isSuperAdmin()
+require_once __DIR__ . '/permissions.php';          // capability matrix, require_capability()
+
+/*
+|--------------------------------------------------------------------------
+| Session enforcement
+|--------------------------------------------------------------------------
+| A deleted or suspended account loses its session on the next request, and a
+| role changed in the database replaces the role cached in the session.
+*/
+auth_enforce_session();
 
 /*
 |--------------------------------------------------------------------------
@@ -112,22 +123,20 @@ if (!function_exists('humanDate')) {
 }
 
 /**
- * Audit logger (Fail-safe)
- * Call: logAudit($adminId, 'ACTION', 'Description...')
+ * Audit logger (fail-safe by default).
+ * Call: logAudit($adminId, 'ACTION', 'Description...', ['target_type' => 'payment', 'target_id' => 42])
+ *
+ * Writes through the shared audit writer, which uses the real audit_logs
+ * columns and redacts credential material. Operations that must roll back when
+ * their audit event cannot be stored should call audit_write() inside their
+ * own transaction instead.
  */
 if (!function_exists('logAudit')) {
-    function logAudit(int $adminId, string $action, string $description): void
+    function logAudit(int $adminId, string $action, string $description = '', array $context = []): void
     {
         try {
-            $pdo = getDB();
-            $stmt = $pdo->prepare(
-                "INSERT INTO audit_logs (admin_id, action, description)
-                 VALUES (?, ?, ?)"
-            );
-            $stmt->execute([$adminId, $action, $description]);
+            audit_log_event(getDB(), $adminId, $action, $description, $context);
         } catch (Throwable $e) {
-            // Fail silently for audit logs so the main user action isn't blocked
-            // In production, you might want to send this to a log file instead
             error_log("Audit log failed for admin {$adminId}: " . $e->getMessage());
         }
     }

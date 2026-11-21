@@ -37,6 +37,55 @@ function requireTenantAuth(): void
         }
     }
     $_SESSION['tenant_last_activity'] = time();
+
+    /*
+     * The session alone is not proof of a usable account: a suspended, exited
+     * or deleted tenant must lose access on the next request, and a temporary
+     * password must be replaced before anything else is reachable.
+     */
+    if (!function_exists('getDB')) {
+        return;
+    }
+
+    try {
+        $stmt = getDB()->prepare(
+            "SELECT account_status, must_change_password, status, exit_date
+             FROM tenants
+             WHERE id = :id
+             LIMIT 1"
+        );
+        $stmt->execute([':id' => (int)$_SESSION['tenant_id']]);
+        $tenant = $stmt->fetch(PDO::FETCH_ASSOC);
+    } catch (Throwable $ignored) {
+        $tenant = null;
+    }
+
+    if (!$tenant) {
+        destroyTenantSession();
+        header('Location: /tenant-system/public/portal/login.php?error=invalid');
+        exit;
+    }
+
+    $accountStatus = strtolower((string)($tenant['account_status'] ?? 'active'));
+    $tenantStatus = strtolower((string)($tenant['status'] ?? 'active'));
+
+    if (
+        in_array($accountStatus, ['suspended', 'revoked', 'locked', 'closed'], true)
+        || ($tenantStatus !== '' && !in_array($tenantStatus, ['active'], true))
+        || !empty($tenant['exit_date'])
+    ) {
+        destroyTenantSession();
+        header('Location: /tenant-system/public/portal/login.php?error=account_closed');
+        exit;
+    }
+
+    if ((int)($tenant['must_change_password'] ?? 0) === 1) {
+        $script = basename((string)($_SERVER['SCRIPT_NAME'] ?? ''));
+        if (!in_array($script, ['change_password.php', 'logout.php'], true)) {
+            header('Location: /tenant-system/public/portal/change_password.php?first=1');
+            exit;
+        }
+    }
 }
 
 function getLoggedInTenantId(): int

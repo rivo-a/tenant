@@ -6,10 +6,10 @@ require_once __DIR__ . '/../core/bootstrap.php';
 require_once __DIR__ . '/../services/TenantService.php';
 
 require_login();
-requireCaretaker();
+require_capability('tenants.manage');
 
 $pdo = getDB();
-$admin_id = current_admin_id();
+$admin_id = current_business_id();
 $tenantService = new TenantService($pdo);
 
 $form = [

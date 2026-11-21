@@ -1,227 +1,152 @@
 <?php
 declare(strict_types=1);
 
+/*
+ * Rent collector's only page.
+ *
+ * Read-only list of genuinely overdue tenants for the collector's landlord.
+ * Built on ArrearsService so the figures match reports and the dashboard.
+ * Nothing here writes: no payment, no balance, no tenant record.
+ */
+
 require_once __DIR__ . '/../core/bootstrap.php';
+require_once __DIR__ . '/../services/ArrearsService.php';
 
 require_login();
-requireRole(['caretaker', 'super_admin']);
+require_capability('collector.overdue');
 
-if (!function_exists('e')) {
-    function e($v): string { return htmlspecialchars((string)($v ?? ''), ENT_QUOTES, 'UTF-8'); }
-}
-function money($v): string { return number_format((float)$v, 0); }
-
-function current_admin_id(): int
-{
-    if (isset($_SESSION['admin']['id'])) return (int)$_SESSION['admin']['id'];
-    return (int)($_SESSION['admin_id'] ?? 0);
-}
-
-function chip(string $label, string $tone): string
-{
-    $map = [
-        'slate' => 'bg-slate-100 text-slate-700 ring-slate-200',
-        'green' => 'bg-emerald-50 text-emerald-700 ring-emerald-200',
-        'amber' => 'bg-amber-50 text-amber-700 ring-amber-200',
-        'red'   => 'bg-red-50 text-red-700 ring-red-200',
-        'blue'  => 'bg-sky-50 text-sky-700 ring-sky-200',
-    ];
-    $cls = $map[$tone] ?? $map['slate'];
-    return '<span class="inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ring-inset '.$cls.'">'.e($label).'</span>';
-}
-
-$pdo = getDB();
-$admin_id = current_admin_id();
-if ($admin_id <= 0) {
+$businessId = current_business_id();
+if ($businessId <= 0) {
     http_response_code(403);
-    exit('Access denied: admin session not found.');
+    exit('Access denied: no business is linked to this account.');
 }
 
-/**
- * Overdue = rent_due_date < today AND tenant is active
- */
-$month = date('Y-m');
-$today = date('Y-m-d');
+$arrears = new ArrearsService(getDB());
+$overdue = $arrears->getOwing($businessId, 0, null, true);
 
-$sql = "
-    SELECT
-        t.id,
-        t.full_name,
-        t.phone,
-        t.status,
-        t.rent_due_date,
+$totalOutstanding = 0.0;
+$oldest = 0;
+foreach ($overdue as $row) {
+    $totalOutstanding += (float)$row['balance'];
+    $oldest = max($oldest, (int)$row['days_overdue']);
+}
 
-        r.room_number,
-        rt.name AS room_type,
+$money = static fn($value): string => 'UGX ' . number_format((float)$value, 0);
+$phoneHref = static function (string $phone): string {
+    $digits = preg_replace('/[^0-9+]/', '', $phone) ?? '';
 
-        COALESCE(
-            NULLIF(t.monthly_rent, 0),
-            NULLIF(r.monthly_rent, 0),
-            rt.default_monthly_rent,
-            0
-        ) AS monthly_rent_effective,
-
-        COALESCE(SUM(p.amount), 0) AS paid_this_month,
-
-        MAX(
-            0,
-            COALESCE(
-                NULLIF(t.monthly_rent, 0),
-                NULLIF(r.monthly_rent, 0),
-                rt.default_monthly_rent,
-                0
-            ) - COALESCE(SUM(p.amount), 0)
-        ) AS outstanding_balance
-
-    FROM tenants t
-    LEFT JOIN rooms r ON r.id = t.room_id
-    LEFT JOIN room_types rt ON rt.id = r.room_type_id
-    LEFT JOIN payments p
-        ON p.tenant_id = t.id
-        AND strftime('%Y-%m', p.payment_date) = :month
-
-    WHERE t.admin_id = :admin_id
-      AND LOWER(t.status) = 'active'
-      AND t.rent_due_date IS NOT NULL
-      AND t.rent_due_date <> ''
-      AND date(t.rent_due_date) < date(:today)
-
-    GROUP BY
-        t.id, t.full_name, t.phone, t.status, t.rent_due_date, t.monthly_rent,
-        r.room_number, r.monthly_rent,
-        rt.name, rt.default_monthly_rent
-
-    ORDER BY date(t.rent_due_date) ASC, t.full_name ASC
-";
-
-$stmt = $pdo->prepare($sql);
-$stmt->execute([
-    ':admin_id' => $admin_id,
-    ':month'    => $month,
-    ':today'    => $today,
-]);
-
-$rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
-
-/* Nav */
-$active = 'caretaker';
+    return $digits === '' ? '' : 'tel:' . $digits;
+};
 ?>
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Caretaker • Overdue Tenants</title>
-
-  <!-- Fonts -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-
-  <!-- Tailwind (compiled, no CDN) -->
-  <link rel="stylesheet" href="assets/css/tailwind.css">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Overdue rent — collection list</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/css/tailwind.css">
 </head>
-
 <body class="min-h-screen bg-slate-50 text-slate-900">
-  <?php
-  $navPath = __DIR__ . '/partials/navbar.php';
-  if (is_file($navPath)) require $navPath;
-  ?>
 
-  <main class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-6">
-
-    <!-- Header -->
-    <div class="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-      <div>
-        <h1 class="text-2xl font-bold tracking-tight font-alt">Caretaker • Overdue Tenants</h1>
-        <p class="mt-1 text-sm text-slate-600">
-          Showing tenants whose due date is before <span class="font-semibold"><?= e($today) ?></span>.
-          Month filter: <?= chip($month, 'blue') ?>
-        </p>
-      </div>
-
-      <div class="flex flex-wrap items-center gap-2">
-        <a href="payments.php"
-           class="inline-flex items-center rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">
-          Payments
-        </a>
-        <a href="payments_history.php"
-           class="inline-flex items-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">
-          History
-        </a>
-      </div>
+<header class="sticky top-0 z-40 border-b border-slate-200 bg-white/90 backdrop-blur">
+  <div class="mx-auto flex max-w-5xl items-center justify-between gap-3 px-4 py-3 sm:px-6">
+    <div class="flex min-w-0 items-center gap-3">
+      <img class="w-9" src="/tenant-system/public/assets/urbahan-logo.png" alt="">
+      <span class="min-w-0 leading-tight">
+        <span class="block truncate font-extrabold">Urbahan</span>
+        <span class="block truncate text-xs text-slate-500">
+          Rent collection · <?= e(auth_user()['full_name'] ?? '') ?>
+        </span>
+      </span>
     </div>
+    <a href="logout.php"
+       class="inline-flex min-h-11 shrink-0 items-center rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900">
+      Logout
+    </a>
+  </div>
+</header>
 
-    <!-- Table card -->
-    <div class="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
-      <div class="px-4 py-4 border-b border-slate-200 flex items-center justify-between">
-        <div>
-          <h2 class="text-lg font-bold font-alt">Overdue List</h2>
-          <p class="text-sm text-slate-600">
-            Total: <span class="font-semibold"><?= (int)count($rows) ?></span>
-          </p>
-        </div>
-      </div>
+<main class="mx-auto max-w-5xl px-4 py-6 sm:px-6">
 
+  <div class="mb-6">
+    <h1 class="text-2xl font-bold tracking-tight">Overdue tenants</h1>
+    <p class="mt-1 max-w-2xl text-sm text-slate-600">
+      Visit these tenants and collect the outstanding rent in person. Record every
+      collection with the landlord afterwards — this page does not change any balance.
+    </p>
+  </div>
+
+  <section class="mb-6 grid gap-3 sm:grid-cols-3" aria-label="Summary">
+    <div class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <p class="text-xs font-semibold uppercase tracking-wide text-slate-500">Tenants overdue</p>
+      <p class="mt-1 text-2xl font-bold tabular-nums"><?= count($overdue) ?></p>
+    </div>
+    <div class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <p class="text-xs font-semibold uppercase tracking-wide text-slate-500">Outstanding</p>
+      <p class="mt-1 text-2xl font-bold tabular-nums"><?= e($money($totalOutstanding)) ?></p>
+    </div>
+    <div class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <p class="text-xs font-semibold uppercase tracking-wide text-slate-500">Longest overdue</p>
+      <p class="mt-1 text-2xl font-bold tabular-nums"><?= $oldest ?> day<?= $oldest === 1 ? '' : 's' ?></p>
+    </div>
+  </section>
+
+  <?php if (!$overdue): ?>
+    <div class="rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-sm">
+      <h2 class="text-lg font-semibold">No overdue tenants</h2>
+      <p class="mx-auto mt-1 max-w-sm text-sm text-slate-600">
+        Every active tenant is up to date on rent. Check again after the next due date.
+      </p>
+    </div>
+  <?php else: ?>
+    <section class="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
       <div class="overflow-x-auto">
-        <table class="min-w-full text-sm">
-          <thead class="bg-slate-50 text-slate-600">
+        <table class="w-full text-sm">
+          <thead class="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
             <tr>
-              <th class="px-4 py-3 text-left font-semibold">Tenant</th>
-              <th class="px-4 py-3 text-left font-semibold">Phone</th>
-              <th class="px-4 py-3 text-left font-semibold">Room</th>
-              <th class="px-4 py-3 text-left font-semibold">Type</th>
-              <th class="px-4 py-3 text-left font-semibold">Due date</th>
-              <th class="px-4 py-3 text-left font-semibold">Rent</th>
-              <th class="px-4 py-3 text-left font-semibold">Paid (<?= e($month) ?>)</th>
-              <th class="px-4 py-3 text-left font-semibold">Outstanding</th>
+              <th class="px-4 py-2 font-semibold">Tenant</th>
+              <th class="px-4 py-2 font-semibold">Phone</th>
+              <th class="px-4 py-2 font-semibold">Room</th>
+              <th class="px-4 py-2 font-semibold">Owed since</th>
+              <th class="px-4 py-2 font-semibold text-right">Outstanding</th>
+              <th class="px-4 py-2 font-semibold text-right">Days overdue</th>
             </tr>
           </thead>
-
-          <tbody class="divide-y divide-slate-100">
-            <?php if (!$rows): ?>
+          <tbody class="divide-y divide-slate-200">
+            <?php foreach ($overdue as $row): ?>
+              <?php $tel = $phoneHref((string)$row['phone']); ?>
               <tr>
-                <td colspan="8" class="px-4 py-6">
-                  <div class="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-4 text-sm text-slate-700">
-                    No overdue tenants found.
-                  </div>
+                <td class="px-4 py-3 font-medium text-slate-900"><?= e($row['full_name']) ?></td>
+                <td class="px-4 py-3 text-slate-700">
+                  <?php if ($tel !== ''): ?>
+                    <a class="font-medium underline decoration-slate-300 underline-offset-2 hover:decoration-slate-900"
+                       href="<?= e($tel) ?>"><?= e($row['phone']) ?></a>
+                  <?php else: ?>
+                    <span class="text-slate-400">No phone recorded</span>
+                  <?php endif; ?>
                 </td>
-              </tr>
-            <?php endif; ?>
-
-            <?php foreach ($rows as $t): ?>
-              <?php
-                $out = (float)($t['outstanding_balance'] ?? 0);
-                $paid = (float)($t['paid_this_month'] ?? 0);
-                $rent = (float)($t['monthly_rent_effective'] ?? 0);
-
-                $due = (string)($t['rent_due_date'] ?? '');
-                $dueChip = $due ? chip($due, 'red') : chip('—', 'slate');
-
-                $outChip = ($out > 0)
-                    ? '<span class="font-bold text-red-700">UGX '.e(money($out)).'</span>'
-                    : '<span class="font-semibold text-emerald-700">UGX 0</span>';
-              ?>
-              <tr class="hover:bg-slate-50">
-                <td class="px-4 py-3">
-                  <div class="font-semibold"><?= e($t['full_name'] ?? '') ?></div>
-                  <div class="text-xs text-slate-500">ID: <?= (int)$t['id'] ?></div>
+                <td class="px-4 py-3 text-slate-700">
+                  <?= e($row['room_number'] !== '' ? 'Room ' . $row['room_number'] : 'Unassigned') ?>
+                  <?php if ($row['room_type'] !== ''): ?>
+                    <span class="block text-xs text-slate-500"><?= e($row['room_type']) ?></span>
+                  <?php endif; ?>
                 </td>
-                <td class="px-4 py-3 text-slate-700"><?= e($t['phone'] ?? '') ?></td>
-                <td class="px-4 py-3 font-semibold"><?= e($t['room_number'] ?? '-') ?></td>
-                <td class="px-4 py-3 text-slate-700"><?= e($t['room_type'] ?? '-') ?></td>
-                <td class="px-4 py-3"><?= $dueChip ?></td>
-                <td class="px-4 py-3 font-semibold font-alt">UGX <?= e(money($rent)) ?></td>
-                <td class="px-4 py-3">UGX <?= e(money($paid)) ?></td>
-                <td class="px-4 py-3"><?= $outChip ?></td>
+                <td class="px-4 py-3 text-slate-700"><?= e($row['owed_since_label']) ?></td>
+                <td class="px-4 py-3 text-right font-semibold tabular-nums"><?= e($money($row['balance'])) ?></td>
+                <td class="px-4 py-3 text-right tabular-nums <?= (int)$row['days_overdue'] > 30 ? 'font-semibold text-red-700' : 'text-slate-700' ?>">
+                  <?= (int)$row['days_overdue'] ?>
+                </td>
               </tr>
             <?php endforeach; ?>
           </tbody>
-
         </table>
       </div>
-    </div>
+    </section>
+  <?php endif; ?>
 
-  </main>
+</main>
 </body>
 </html>

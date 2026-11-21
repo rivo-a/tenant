@@ -5,10 +5,10 @@ require_once __DIR__ . '/../core/bootstrap.php';
 require_once __DIR__ . '/../services/TenantService.php';
 
 require_login();
-requireCaretaker();
+require_capability('tenants.manage');
 
 $pdo = getDB();
-$adminId = current_admin_id();
+$adminId = current_business_id();
 $tenantService = new TenantService($pdo);
 
 $readScalar = static function (array $source, string $key, string $default = ''): string {

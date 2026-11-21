@@ -5,9 +5,10 @@ require_once __DIR__ . '/../core/bootstrap.php';
 require_once __DIR__ . '/../services/ArrearsService.php';
 
 require_login();
+require_capability('reports.view');
 
 $pdo = getDB();
-$adminId = current_admin_id();
+$adminId = current_business_id();
 if ($adminId <= 0) {
     http_response_code(403);
     exit('Access denied.');
