@@ -63,9 +63,16 @@ if (!function_exists('csp_nonce')) {
     }
 }
 
-// Enforce CSP with the generated nonce (uncommented and fixed)
-// Note: Add 'unsafe-inline' to style-src only if you absolutely need it for Tailwind/legacy CSS
-header("Content-Security-Policy: default-src 'self'; script-src 'self' 'nonce-" . csp_nonce() . "'; style-src 'self' 'unsafe-inline';");
+// Enforce CSP with the generated nonce
+// Inline <script> blocks and event handlers must carry csp_nonce() to run.
+// Google Fonts is allowed for style and font sources only.
+header(
+    "Content-Security-Policy: default-src 'self'; "
+    . "script-src 'self' 'nonce-" . csp_nonce() . "'; "
+    . "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+    . "font-src 'self' https://fonts.gstatic.com data:; "
+    . "img-src 'self' data:;"
+);
 
 /*
 |--------------------------------------------------------------------------
@@ -75,6 +82,8 @@ header("Content-Security-Policy: default-src 'self'; script-src 'self' 'nonce-" 
 require_once __DIR__ . '/../config/config.php';
 require_once __DIR__ . '/../config/database.php';   // NOW properly provides getDB()
 require_once __DIR__ . '/helpers.php';              // redirect(), e(), require_login(), etc.
+require_once __DIR__ . '/rent.php';                 // rent + payment expressions, rent propagation
+require_once __DIR__ . '/room_type_colors.php';     // room type colour keys
 require_once __DIR__ . '/csrf.php';
 require_once __DIR__ . '/permissions.php';          // requireRole(), requireCaretaker(), isSuperAdmin()
 

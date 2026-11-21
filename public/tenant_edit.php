@@ -47,6 +47,7 @@ $form = [
     'phone' => (string)($tenant['phone'] ?? ''),
     'email' => (string)($tenant['email'] ?? ''),
     'move_in_date' => (string)($tenant['move_in_date'] ?? ''),
+    'monthly_rent' => $tenant['monthly_rent'] !== null ? (string)(int)$tenant['monthly_rent'] : '',
 ];
 $fieldErrors = [];
 $error = '';
@@ -62,9 +63,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $form['phone'] = $readScalar($_POST, 'phone');
         $form['email'] = $readScalar($_POST, 'email');
         $form['move_in_date'] = $readScalar($_POST, 'move_in_date');
+        $form['monthly_rent'] = $readScalar($_POST, 'monthly_rent');
 
         if ($form['full_name'] === '') {
             $fieldErrors['full_name'] = 'Tenant name is required.';
+        }
+
+        if ($form['monthly_rent'] !== '' && (!is_numeric($form['monthly_rent']) || (float)$form['monthly_rent'] < 0)) {
+            $fieldErrors['monthly_rent'] = 'Enter a rent of 0 or more, or leave the field blank.';
         }
 
         if (
@@ -146,8 +152,14 @@ $roomNumber = (string)($tenant['room_number'] ?? '—');
             <dd class="mt-1 text-slate-900"><?= e($roomNumber) ?></dd>
           </div>
           <div>
-            <dt class="text-xs font-semibold uppercase tracking-wide text-slate-500">Monthly rent</dt>
-            <dd class="mt-1 font-semibold tabular-nums text-slate-900">UGX <?= e(number_format($rent, 0)) ?></dd>
+            <dt class="text-xs font-semibold uppercase tracking-wide text-slate-500">Rent override</dt>
+            <dd class="mt-1 font-semibold tabular-nums text-slate-900">
+              <?php if ($rent > 0): ?>
+                UGX <?= e(number_format($rent, 0)) ?>
+              <?php else: ?>
+                <span class="font-normal text-slate-600">Follows the room rent</span>
+              <?php endif; ?>
+            </dd>
           </div>
           <div>
             <dt class="text-xs font-semibold uppercase tracking-wide text-slate-500">Status</dt>
@@ -156,7 +168,7 @@ $roomNumber = (string)($tenant['room_number'] ?? '—');
             </dd>
           </div>
         </dl>
-        <p class="mt-6 border-t border-slate-100 pt-4 text-xs leading-5 text-slate-500">Room assignment and monthly rent are shown for reference. Change those from the room or tenancy workflow.</p>
+        <p class="mt-6 border-t border-slate-100 pt-4 text-xs leading-5 text-slate-500">Room assignment follows the room record. Set a negotiated rent below only when this tenant pays a different amount.</p>
       </section>
 
       <section class="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6 lg:col-span-3" aria-labelledby="tenant-details-title">
@@ -192,6 +204,16 @@ $roomNumber = (string)($tenant['room_number'] ?? '—');
               <label for="move_in_date" class="block text-sm font-semibold text-slate-700">Move-in date</label>
               <input id="move_in_date" name="move_in_date" type="date" value="<?= e($form['move_in_date']) ?>" required class="mt-2 min-h-11 w-full rounded-xl border <?= isset($fieldErrors['move_in_date']) ? 'border-red-400' : 'border-slate-300' ?> bg-white px-3 py-2 text-sm outline-none transition focus:border-slate-500 focus:ring-2 focus:ring-slate-200" <?= isset($fieldErrors['move_in_date']) ? 'aria-invalid="true" aria-describedby="move_in_date_error"' : '' ?>>
               <?php if (isset($fieldErrors['move_in_date'])): ?><p id="move_in_date_error" class="mt-2 text-xs font-medium text-red-700"><?= e($fieldErrors['move_in_date']) ?></p><?php endif; ?>
+            </div>
+          </fieldset>
+
+          <fieldset class="mt-6 border-t border-slate-100 pt-6">
+            <legend class="font-alt text-lg font-bold">Rent</legend>
+            <div class="mt-5">
+              <label for="monthly_rent" class="block text-sm font-semibold text-slate-700">Negotiated rent (UGX) <span class="font-normal text-slate-500">(optional)</span></label>
+              <input id="monthly_rent" name="monthly_rent" type="number" min="0" step="1" inputmode="numeric" value="<?= e($form['monthly_rent']) ?>" placeholder="Follows the room rent" class="mt-2 min-h-11 w-full rounded-xl border <?= isset($fieldErrors['monthly_rent']) ? 'border-red-400' : 'border-slate-300' ?> bg-white px-3 py-2 text-sm outline-none transition focus:border-slate-500 focus:ring-2 focus:ring-slate-200" <?= isset($fieldErrors['monthly_rent']) ? 'aria-invalid="true" aria-describedby="monthly_rent_error"' : '' ?>>
+              <?php if (isset($fieldErrors['monthly_rent'])): ?><p id="monthly_rent_error" class="mt-2 text-xs font-medium text-red-700"><?= e($fieldErrors['monthly_rent']) ?></p><?php endif; ?>
+              <p class="mt-2 text-xs leading-5 text-slate-500">Leave blank to follow the room rent. A saved figure overrides the room until the room rent is changed.</p>
             </div>
           </fieldset>
 

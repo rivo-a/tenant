@@ -167,7 +167,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 logAudit(
                     $admin_id,
                     'TENANT_ONBOARDED',
-                    "Tenant #{$tenantResult['id']} ({$form['full_name']}) onboarded with portal access."
+                    "Tenant #{$tenantResult['tenant_id']} ({$form['full_name']}) onboarded with portal access."
                 );
             } catch (Throwable $ignored) {
                 // Audit failure must not break successful onboarding.

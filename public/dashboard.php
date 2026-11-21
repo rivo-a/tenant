@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/../core/bootstrap.php';
+require_once __DIR__ . '/../services/ArrearsService.php';
 
 if (!isLoggedIn()) {
     redirect('login.php');
@@ -25,14 +26,7 @@ $roomStats = [
 $upcomingRents = [];
 $overdueRents = [];
 
-$rentExpression = "COALESCE(
-    NULLIF(t.monthly_rent, 0),
-    NULLIF(r.monthly_rent, 0),
-    rt.default_monthly_rent,
-    0
-)";
-$paidExpression = 'COALESCE(SUM(p.amount), 0)';
-$collectibleExpression = "MAX(0, {$rentExpression} - {$paidExpression})";
+$dashboardPendingTotal = 0.0;
 
 try {
     $roomStatsStmt = $pdo->prepare("
@@ -68,52 +62,38 @@ try {
     ]);
     $upcomingRents = $upcomingStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
-    $overdueStmt = $pdo->prepare("
-        SELECT
-            t.id AS tenant_id,
-            t.full_name,
-            r.room_number,
-            rt.name AS room_type,
-            t.rent_due_date,
-            {$rentExpression} AS monthly_rent,
-            {$paidExpression} AS paid_this_month,
-            {$collectibleExpression} AS collectible_balance
-        FROM tenants t
-        LEFT JOIN rooms r
-            ON r.id = t.room_id
-           AND r.admin_id = :room_admin_id
-        LEFT JOIN room_types rt
-            ON rt.id = r.room_type_id
-        LEFT JOIN payments p
-            ON p.tenant_id = t.id
-           AND p.admin_id = :payment_admin_id
-           AND COALESCE(NULLIF(p.payment_month, ''), strftime('%Y-%m', p.payment_date)) = :month_key
-        WHERE t.admin_id = :admin_id
-          AND LOWER(COALESCE(t.status, '')) = 'active'
-          AND t.exit_date IS NULL
-          AND t.rent_due_date IS NOT NULL
-          AND t.rent_due_date <> ''
-          AND date(t.rent_due_date) < date(:today)
-        GROUP BY
-            t.id,
-            t.full_name,
-            t.rent_due_date,
-            t.monthly_rent,
-            r.room_number,
-            r.monthly_rent,
-            rt.name,
-            rt.default_monthly_rent
-        HAVING {$collectibleExpression} > 0
-        ORDER BY collectible_balance DESC, date(t.rent_due_date) ASC, t.full_name ASC
-    ");
-    $overdueStmt->execute([
-        ':room_admin_id' => $admin_id,
-        ':payment_admin_id' => $admin_id,
-        ':admin_id' => $admin_id,
-        ':month_key' => $monthKey,
-        ':today' => $today,
-    ]);
-    $overdueRents = $overdueStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    /*
+     * Overdue comes from the shared arrears engine: rent charged since move-in
+     * minus verified payments. Pending payments never reduce the balance.
+     */
+    $arrears = (new ArrearsService($pdo))->getArrears(
+        $admin_id,
+        0,
+        new DateTimeImmutable('now', new DateTimeZone('Africa/Kampala'))
+    );
+
+    $overdueRents = [];
+    foreach ($arrears['rows'] as $arrearsRow) {
+        if (!(bool)$arrearsRow['is_overdue']) {
+            continue;
+        }
+
+        $overdueRents[] = [
+            'tenant_id' => $arrearsRow['tenant_id'],
+            'full_name' => $arrearsRow['full_name'],
+            'room_number' => $arrearsRow['room_number'],
+            'room_type' => $arrearsRow['room_type'],
+            'rent_due_date' => $arrearsRow['rent_due_date'],
+            'monthly_rent' => $arrearsRow['rent'],
+            'paid_this_month' => $arrearsRow['verified_applied'],
+            'pending_paid' => $arrearsRow['pending_paid'],
+            'months_behind' => $arrearsRow['months_behind'],
+            'owed_since_label' => $arrearsRow['owed_since_label'],
+            'collectible_balance' => $arrearsRow['balance'],
+        ];
+    }
+
+    $dashboardPendingTotal = (float)($arrears['totals']['pending'] ?? 0);
 } catch (Throwable $exception) {
     // Keep database details out of the UI while providing a recoverable state.
     $dashboardError = 'Unable to load dashboard data.';
@@ -193,6 +173,18 @@ function dashboardCollectionData(array $tenant, string $today): array
     $balance = max(0, (float)($tenant['collectible_balance'] ?? 0));
     $isPartPaid = $paid > 0 && $balance > 0;
     $tenantId = (int)($tenant['tenant_id'] ?? 0);
+    $monthsBehind = (int)($tenant['months_behind'] ?? 0);
+
+    if ($monthsBehind >= 2) {
+        $statusLabel = $monthsBehind . ' months behind';
+        $statusTone = 'red';
+    } elseif ($isPartPaid) {
+        $statusLabel = 'Part paid';
+        $statusTone = 'amber';
+    } else {
+        $statusLabel = 'Payment due';
+        $statusTone = 'red';
+    }
 
     return [
         'tenantId' => $tenantId,
@@ -204,8 +196,8 @@ function dashboardCollectionData(array $tenant, string $today): array
         'paid' => $paid,
         'rent' => $rent,
         'balance' => $balance,
-        'statusLabel' => $isPartPaid ? 'Part paid' : 'Payment due',
-        'statusTone' => $isPartPaid ? 'amber' : 'red',
+        'statusLabel' => $statusLabel,
+        'statusTone' => $statusTone,
         'paymentUrl' => 'payments.php?' . http_build_query(['tenant_id' => $tenantId]),
     ];
 }
@@ -275,7 +267,7 @@ $active = 'dashboard';
         <div>
           <h2 id="collection-summary-heading" class="font-alt text-xl font-bold">Collect overdue rent</h2>
         </div>
-        <p class="text-sm text-slate-600 sm:text-right">Active tenants · <?= e($monthLabel) ?></p>
+        <p class="text-sm text-slate-600 sm:text-right">Active tenants · as of <?= e(dashboardDate($today)) ?></p>
       </div>
 
       <dl class="grid grid-cols-1 divide-y divide-slate-200 md:grid-cols-[minmax(0,1.35fr)_minmax(15rem,0.65fr)] md:divide-x md:divide-y-0">
@@ -285,8 +277,13 @@ $active = 'dashboard';
             <?= e(dashboardMoney($totalCollectibleArrears)) ?>
           </dd>
           <p class="mt-2 max-w-xl text-sm text-slate-600">
-            Only positive balances for active tenants with a due date before today are included.
+            Rent charged since move-in minus verified payments, for active tenants whose due date has passed.
           </p>
+          <?php if ($dashboardPendingTotal > 0): ?>
+            <p class="mt-2 text-sm text-amber-700">
+              <span class="font-semibold tabular-nums"><?= e(dashboardMoney($dashboardPendingTotal)) ?></span> pending verification, not deducted.
+            </p>
+          <?php endif; ?>
         </div>
 
         <div class="flex items-center justify-between gap-4 px-5 py-5 sm:px-6 sm:py-6 md:block">
@@ -309,7 +306,7 @@ $active = 'dashboard';
         <div>
           <h2 id="overdue-heading" class="font-alt text-lg font-bold">Overdue collection queue</h2>
           <p class="mt-1 text-sm text-slate-600">
-            Active tenants with a collectible balance for <?= e($monthLabel) ?>, highest balance first.
+            Active tenants past their rent due date, highest balance first.
           </p>
         </div>
         <a href="payments.php"
@@ -352,7 +349,7 @@ $active = 'dashboard';
 
               <div class="mt-3 flex items-center justify-between gap-3">
                 <p class="text-xs text-slate-500">
-                  Paid this month <span class="font-mono font-semibold tabular-nums text-slate-700"><?= e(dashboardMoney($collection['paid'])) ?></span>
+                  Verified paid <span class="font-mono font-semibold tabular-nums text-slate-700"><?= e(dashboardMoney($collection['paid'])) ?></span>
                 </p>
                 <a href="<?= e($collection['paymentUrl']) ?>"
                    aria-label="Collect payment for <?= e($collection['tenantName']) ?>"
@@ -366,13 +363,13 @@ $active = 'dashboard';
 
         <div class="hidden overflow-x-auto md:block">
           <table class="min-w-[900px] w-full text-sm">
-            <caption class="sr-only">Overdue collection queue for active tenants in <?= e($monthLabel) ?></caption>
+            <caption class="sr-only">Overdue collection queue for active tenants as of <?= e(dashboardDate($today)) ?></caption>
             <thead class="bg-slate-50 text-slate-600">
               <tr>
                 <th scope="col" class="px-4 py-3 text-left font-semibold">Tenant</th>
                 <th scope="col" class="px-4 py-3 text-left font-semibold">Due date</th>
                 <th scope="col" class="px-4 py-3 text-left font-semibold">Monthly rent</th>
-                <th scope="col" class="px-4 py-3 text-left font-semibold">Paid this month</th>
+                <th scope="col" class="px-4 py-3 text-left font-semibold">Verified paid</th>
                 <th scope="col" class="px-4 py-3 text-left font-semibold">Collectible balance</th>
                 <th scope="col" class="px-4 py-3 text-left font-semibold">Status</th>
                 <th scope="col" class="px-4 py-3 text-left font-semibold">Action</th>

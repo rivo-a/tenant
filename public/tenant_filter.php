@@ -49,7 +49,9 @@ function getFilteredTenants(PDO $pdo, int $admin_id, array $params): array
         'room_number'            => 'r.room_number',
         'rent_due_date'          => 't.rent_due_date',
         'monthly_rent_effective' => 'monthly_rent_effective',
-        'paid_this_month'        => 'paid_this_month',
+        'paid_this_month'        => 'verified_paid',
+        'verified_paid'          => 'verified_paid',
+        'pending_paid'           => 'pending_paid',
         'outstanding_balance'    => 'outstanding_balance',
         'status'                 => 't.status',
     ];
@@ -59,12 +61,25 @@ function getFilteredTenants(PDO $pdo, int $admin_id, array $params): array
         : 'full_name';
     $sortExpr = $sortMap[$sortKey] ?? 't.full_name';
 
-    $rentExpression = "COALESCE(
-        NULLIF(t.monthly_rent, 0),
-        NULLIF(r.monthly_rent, 0),
-        rt.default_monthly_rent,
-        0
+    $rentExpression = rent_expression('t', 'r', 'rt');
+    $verifiedExpression = payment_verified_sql('p');
+    $pendingExpression = payment_pending_sql('p');
+    $monthStart = $month . '-01';
+
+    /*
+     * Arrears, not one calendar month: bill every month since move-in and take
+     * off verified payments only. Mirrors ArrearsService so the roster and
+     * reports quote the same figure for the same tenant.
+     */
+    $monthsDueExpression = "MAX(
+        0,
+        ((CAST(strftime('%Y', :month_start) AS INTEGER) - CAST(strftime('%Y', COALESCE(t.move_in_date, :month_start)) AS INTEGER)) * 12)
+        + (CAST(strftime('%m', :month_start) AS INTEGER) - CAST(strftime('%m', COALESCE(t.move_in_date, :month_start)) AS INTEGER))
+        + 1
     )";
+    $expectedExpression = "({$monthsDueExpression} * {$rentExpression})";
+    $verifiedPaidExpression = "COALESCE(SUM(CASE WHEN {$verifiedExpression} THEN p.amount ELSE 0 END), 0)";
+    $pendingPaidExpression = "COALESCE(SUM(CASE WHEN {$pendingExpression} THEN p.amount ELSE 0 END), 0)";
 
     $sql = "
         SELECT
@@ -77,11 +92,11 @@ function getFilteredTenants(PDO $pdo, int $admin_id, array $params): array
             r.room_number,
             rt.name AS room_type,
             {$rentExpression} AS monthly_rent_effective,
-            COALESCE(SUM(p.amount), 0) AS paid_this_month,
-            MAX(
-                0,
-                {$rentExpression} - COALESCE(SUM(p.amount), 0)
-            ) AS outstanding_balance
+            {$monthsDueExpression} AS months_due,
+            {$expectedExpression} AS expected_total,
+            {$verifiedPaidExpression} AS verified_paid,
+            {$pendingPaidExpression} AS pending_paid,
+            MAX(0, {$expectedExpression} - {$verifiedPaidExpression} - {$pendingPaidExpression}) AS outstanding_balance
         FROM tenants t
         LEFT JOIN rooms r
             ON r.id = t.room_id
@@ -90,14 +105,13 @@ function getFilteredTenants(PDO $pdo, int $admin_id, array $params): array
         LEFT JOIN payments p
             ON p.tenant_id = t.id
             AND p.admin_id = :payment_admin_id
-            AND strftime('%Y-%m', p.payment_date) = :month
         WHERE t.admin_id = :admin_id
     ";
 
     $bind = [
         ':admin_id'         => $admin_id,
         ':payment_admin_id' => $admin_id,
-        ':month'            => $month,
+        ':month_start'      => $monthStart,
     ];
 
     $includeExited = filter_var($params['include_exited'] ?? false, FILTER_VALIDATE_BOOLEAN);
@@ -150,12 +164,10 @@ function getFilteredTenants(PDO $pdo, int $admin_id, array $params): array
     ";
 
     if (in_array($paymentStatus, ['paid', 'partial', 'unpaid'], true)) {
-        $paidExpression = 'COALESCE(SUM(p.amount), 0)';
-
         $sql .= match ($paymentStatus) {
-            'paid' => " HAVING {$rentExpression} > 0 AND {$paidExpression} >= {$rentExpression} ",
-            'partial' => " HAVING {$paidExpression} > 0 AND {$paidExpression} < {$rentExpression} ",
-            'unpaid' => " HAVING {$paidExpression} <= 0 ",
+            'paid' => " HAVING {$rentExpression} > 0 AND outstanding_balance <= 0.00001 ",
+            'partial' => " HAVING verified_paid > 0 AND outstanding_balance > 0.00001 ",
+            'unpaid' => " HAVING verified_paid <= 0.00001 ",
         };
     }
 
@@ -164,10 +176,10 @@ function getFilteredTenants(PDO $pdo, int $admin_id, array $params): array
     $stmt = $pdo->prepare($sql);
     $stmt->bindValue(':admin_id', $bind[':admin_id'], PDO::PARAM_INT);
     $stmt->bindValue(':payment_admin_id', $bind[':payment_admin_id'], PDO::PARAM_INT);
-    $stmt->bindValue(':month', $bind[':month'], PDO::PARAM_STR);
+    $stmt->bindValue(':month_start', $bind[':month_start'], PDO::PARAM_STR);
 
     foreach ($bind as $key => $value) {
-        if (in_array($key, [':admin_id', ':payment_admin_id', ':month'], true)) {
+        if (in_array($key, [':admin_id', ':payment_admin_id', ':month_start'], true)) {
             continue;
         }
         $stmt->bindValue($key, $value);
@@ -181,7 +193,10 @@ function getFilteredTenants(PDO $pdo, int $admin_id, array $params): array
 
     foreach ($rows as &$tenant) {
         $tenant['monthly_rent_effective'] = (float)($tenant['monthly_rent_effective'] ?? 0);
-        $tenant['paid_this_month'] = (float)($tenant['paid_this_month'] ?? 0);
+        $tenant['months_due'] = (int)($tenant['months_due'] ?? 0);
+        $tenant['expected_total'] = (float)($tenant['expected_total'] ?? 0);
+        $tenant['verified_paid'] = (float)($tenant['verified_paid'] ?? 0);
+        $tenant['pending_paid'] = (float)($tenant['pending_paid'] ?? 0);
         $tenant['outstanding_balance'] = (float)($tenant['outstanding_balance'] ?? 0);
     }
     unset($tenant);

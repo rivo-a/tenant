@@ -48,8 +48,12 @@ $postedTenantId = (int)($paymentFormData['tenant_id'] ?? 0);
     $isOverdue = $dueTimestamp !== false && $dueTimestamp < strtotime($today);
 
     $rent = (float)($tenant['monthly_rent_effective'] ?? 0);
-    $paid = (float)($tenant['paid_this_month'] ?? 0);
+    $paid = (float)($tenant['verified_paid'] ?? 0);
+    $pending = (float)($tenant['pending_paid'] ?? 0);
     $outstanding = (float)($tenant['outstanding_balance'] ?? 0);
+    $monthsDue = (int)($tenant['months_due'] ?? 0);
+    $expected = (float)($tenant['expected_total'] ?? 0);
+    $verifiedApplied = $expected > 0 ? min($paid, $expected) : $paid;
 
     if ($rent <= 0) {
         $statusChip = paymentChip('Rent missing', 'red');
@@ -57,12 +61,18 @@ $postedTenantId = (int)($paymentFormData['tenant_id'] ?? 0);
         $statusChip = paymentChip('Paid', 'green');
     } elseif ($paid > 0) {
         $statusChip = paymentChip('Partial', 'amber');
+    } elseif ($pending > 0) {
+        $statusChip = paymentChip('Pending review', 'amber');
     } else {
         $statusChip = paymentChip('Unpaid', 'red');
     }
 
     $isPostedTenant = $postedTenantId === $tenantId;
-    $amountValue = $isPostedTenant ? (string)($paymentFormData['amount'] ?? '') : '';
+    $focusTenantId = (int)($params['tenant_id'] ?? 0);
+    $amountDefault = ($focusTenantId === $tenantId && $outstanding > 0)
+        ? (string)(int)$outstanding
+        : '';
+    $amountValue = $isPostedTenant ? (string)($paymentFormData['amount'] ?? '') : $amountDefault;
     $dateValue = $isPostedTenant
         ? (string)($paymentFormData['payment_date'] ?? $today)
         : $today;
@@ -101,13 +111,21 @@ $postedTenantId = (int)($paymentFormData['tenant_id'] ?? 0);
       <div class="font-semibold <?= $outstanding > 0 ? 'text-slate-900' : 'text-emerald-700' ?>">
         UGX <?= e(number_format($outstanding, 0)) ?>
       </div>
-      <div class="mt-1 text-xs text-slate-500">Paid: UGX <?= e(number_format($paid, 0)) ?></div>
+      <div class="mt-1 text-xs text-slate-500">
+        <?= (int)$monthsDue ?> month(s) billed, UGX <?= e(number_format($expected, 0)) ?>
+      </div>
+      <div class="mt-1 text-xs text-slate-500">Verified: UGX <?= e(number_format($verifiedApplied, 0)) ?></div>
+      <?php if ($pending > 0): ?>
+        <div class="mt-1 text-xs font-semibold text-amber-700">Pending: UGX <?= e(number_format($pending, 0)) ?></div>
+      <?php endif; ?>
     </td>
 
     <td class="px-4 py-3">
       <form method="post" action="<?= e($paymentAction) ?>" class="flex min-w-[520px] flex-col gap-2 lg:min-w-0" data-payment-form>
         <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>">
         <input type="hidden" name="tenant_id" value="<?= $tenantId ?>">
+        <?php /* Flag lives on a hidden input: a disabled submit button would drop its own value. */ ?>
+        <input type="hidden" name="receive_payment" value="1">
 
         <div class="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-5">
           <div>
@@ -167,8 +185,6 @@ $postedTenantId = (int)($paymentFormData['tenant_id'] ?? 0);
 
         <button
           type="submit"
-          name="receive_payment"
-          value="1"
           data-payment-submit
           data-submitting-label="Saving…"
           class="inline-flex min-h-11 w-full items-center justify-center rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"

@@ -1614,13 +1614,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             autocomplete="tel"
                             required
                             class="block w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
-                            placeholder="0704487563"
+                            placeholder="07*******"
                         >
 
                         <p
                             class="mt-2 text-xs text-slate-500"
                         >
-                            Example: 0704487563
+                            Example: 07*******
                         </p>
 
                     </div>

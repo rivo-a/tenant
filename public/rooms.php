@@ -168,15 +168,24 @@ if (isset($_POST['edit_room_id'])) {
     );
     $stmt->execute([$new_rent, $room_id, $admin_id]);
 
+    /*
+     * Room rent is the source of truth for active tenants in that room.
+     * Clearing their snapshot makes reports, dashboard and payments read
+     * the new room rent immediately instead of an old figure.
+     */
+    $tenantsUpdated = clear_room_tenant_rent_snapshots($pdo, $room_id, $admin_id);
+
     try {
         logAudit(
             $admin_id,
             'ROOM_RENT_UPDATED',
-            "Room #{$room_id} rent override set to " . ($new_rent === null ? 'template default' : (string)$new_rent) . "."
+            "Room #{$room_id} rent override set to " . ($new_rent === null ? 'template default' : (string)$new_rent) . ". Tenants synced: {$tenantsUpdated}."
         );
     } catch (Throwable $ignored) {}
 
-    $_SESSION['success'] = "Room rent updated successfully.";
+    $_SESSION['success'] = $tenantsUpdated > 0
+        ? "Room rent updated. {$tenantsUpdated} active tenant(s) in this room now follow it."
+        : "Room rent updated successfully.";
     redirect('rooms.php');
 }
 
@@ -214,19 +223,22 @@ if (isset($_POST['bulk_update_rent'])) {
             $stmt->execute([$roomTypeId]);
             $affected = (int)$stmt->fetchColumn();
 
+            // Active tenants on rooms without their own override follow the new template rent.
+            $tenantsUpdated = clear_room_type_tenant_rent_snapshots($pdo, $roomTypeId, $admin_id);
+
             if (function_exists('logAudit')) {
                 try {
                     logAudit(
                         $admin_id,
                         'BULK_RENT_UPDATE',
-                        "Room type '{$type['name']}' rent changed from {$type['default_monthly_rent']} to {$newRent}. Affected rooms: {$affected}"
+                        "Room type '{$type['name']}' rent changed from {$type['default_monthly_rent']} to {$newRent}. Affected rooms: {$affected}. Tenants synced: {$tenantsUpdated}."
                     );
                 } catch (Throwable $ignored) {}
             }
 
             $pdo->commit();
 
-            $_SESSION['success'] = "Rent updated. {$affected} rooms affected.";
+            $_SESSION['success'] = "Rent updated. {$affected} rooms affected, {$tenantsUpdated} tenant(s) synced.";
         } catch (Throwable $e) {
             $pdo->rollBack();
             $_SESSION['error'] = $e->getMessage();
@@ -235,6 +247,34 @@ if (isset($_POST['bulk_update_rent'])) {
         $_SESSION['error'] = "Valid room type and rent are required.";
     }
 
+    redirect('rooms.php');
+}
+
+/* ---- Sync tenant rents with their room ---- */
+if (isset($_POST['sync_tenant_rents'])) {
+    $stmt = $pdo->prepare("
+        UPDATE tenants
+        SET monthly_rent = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE admin_id = ?
+          AND LOWER(COALESCE(status, 'active')) = 'active'
+          AND exit_date IS NULL
+          AND monthly_rent IS NOT NULL
+    ");
+    $stmt->execute([$admin_id]);
+    $synced = (int)$stmt->rowCount();
+
+    try {
+        logAudit(
+            $admin_id,
+            'TENANT_RENT_SYNCED',
+            "Tenant rent snapshots cleared for {$synced} active tenant(s); rent now follows the room or room type."
+        );
+    } catch (Throwable $ignored) {}
+
+    $_SESSION['success'] = $synced > 0
+        ? "{$synced} tenant(s) now follow their room rent. Re-enter a negotiated rent on a tenant to override it."
+        : "No tenant rent snapshots needed clearing.";
     redirect('rooms.php');
 }
 
@@ -248,12 +288,35 @@ $roomTypes = $pdo->query("
     ORDER BY name
 ")->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
-$rooms = $pdo->query("
-    SELECT r.*, rt.name AS room_type, rt.default_monthly_rent
+$roomsStmt = $pdo->prepare("
+    SELECT
+        r.*,
+        rt.name AS room_type,
+        rt.default_monthly_rent,
+        rt.is_active AS room_type_active
     FROM rooms r
-    JOIN room_types rt ON rt.id = r.room_type_id
+    LEFT JOIN room_types rt ON rt.id = r.room_type_id
+    WHERE r.admin_id = ?
     ORDER BY r.room_number
-")->fetchAll(PDO::FETCH_ASSOC) ?: [];
+");
+$roomsStmt->execute([$admin_id]);
+$rooms = $roomsStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+// Occupancy per room type, shown inside each template field.
+$roomTypeStats = [];
+foreach ($rooms as $roomRow) {
+    $rowTypeId = (int)($roomRow['room_type_id'] ?? 0);
+    if (!isset($roomTypeStats[$rowTypeId])) {
+        $roomTypeStats[$rowTypeId] = ['total' => 0, 'occupied' => 0, 'free' => 0];
+    }
+
+    $roomTypeStats[$rowTypeId]['total']++;
+    if ((string)($roomRow['status'] ?? '') === 'occupied') {
+        $roomTypeStats[$rowTypeId]['occupied']++;
+    } else {
+        $roomTypeStats[$rowTypeId]['free']++;
+    }
+}
 
 $active = 'rooms';
 ?>
@@ -277,16 +340,6 @@ $active = 'rooms';
     .modal-backdrop { backdrop-filter: blur(6px); }
   </style>
 
-  <script>
-    function openEditModal(id, rent) {
-      document.getElementById('edit_room_id').value = id;
-      document.getElementById('edit_monthly_rent').value = (rent === null ? '' : rent);
-      document.getElementById('editModal').classList.remove('hidden');
-    }
-    function closeModal() {
-      document.getElementById('editModal').classList.add('hidden');
-    }
-  </script>
 </head>
 
 <body class="min-h-screen bg-slate-50 text-slate-900">
@@ -319,25 +372,45 @@ $active = 'rooms';
       </div>
     <?php endif; ?>
 
-    <!-- Templates grid -->
-    <div class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm mb-6">
-      <div class="flex items-center justify-between gap-2">
-        <div>
-          <h2 class="text-lg font-bold font-alt">Default Room Fees / Templates</h2>
-          <p class="text-sm text-slate-600">These are the standard rents per room type.</p>
-        </div>
+    <!-- Room type templates -->
+    <section class="mb-6" aria-labelledby="room-templates-heading">
+      <div class="flex items-end justify-between gap-3 pb-3">
+        <h2 id="room-templates-heading" class="text-lg font-bold font-alt">Room type templates</h2>
+        <span class="text-xs font-semibold text-slate-500"><?= count($roomTypes) ?> types</span>
       </div>
 
-      <div class="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        <?php foreach ($roomTypes as $type): ?>
-          <div class="rounded-2xl border border-slate-200 bg-white p-4">
-            <div class="text-sm font-semibold"><?= e($type['name']) ?></div>
-            <div class="mt-2 text-2xl font-black font-alt">UGX <?= e(money($type['default_monthly_rent'])) ?></div>
-            <div class="mt-2 text-xs text-slate-500">Standard monthly rent</div>
-          </div>
-        <?php endforeach; ?>
-      </div>
-    </div>
+      <?php if ($roomTypes): ?>
+        <div class="grid grid-cols-1 gap-px overflow-hidden rounded-2xl border border-slate-200 bg-slate-200 sm:grid-cols-2 lg:grid-cols-4">
+          <?php foreach ($roomTypes as $type): ?>
+            <?php
+              $typeColor = room_type_color((int)$type['id'], (string)$type['name']);
+              $typeStats = $roomTypeStats[(int)$type['id']] ?? ['total' => 0, 'occupied' => 0, 'free' => 0];
+              $onLightWash = ($typeColor['on'] ?? 'dark') === 'light';
+              $fieldLabelClass = $onLightWash ? 'text-white/90' : 'text-slate-900/80';
+              $fieldMetaClass = $onLightWash ? 'text-white/70' : 'text-slate-900/55';
+              $fieldStatClass = $onLightWash ? 'text-white/80' : 'text-slate-900/65';
+            ?>
+            <div class="p-4" style="background: <?= e($typeColor['wash']) ?>">
+              <div class="flex items-start justify-between gap-2">
+                <p class="text-xs font-semibold <?= $fieldLabelClass ?>"><?= e($type['name']) ?></p>
+                <p class="text-[11px] font-semibold <?= $fieldMetaClass ?>"><?= (int)$typeStats['total'] ?> rooms</p>
+              </div>
+              <p class="mt-2 font-alt text-2xl font-bold tabular-nums tracking-tight" style="color: <?= e($typeColor['deep']) ?>">
+                UGX <?= e(money($type['default_monthly_rent'])) ?>
+              </p>
+              <div class="mt-4 flex items-center gap-4 text-[11px] font-semibold <?= $fieldStatClass ?>">
+                <span><?= (int)$typeStats['occupied'] ?> occupied</span>
+                <span><?= (int)$typeStats['free'] ?> free</span>
+              </div>
+            </div>
+          <?php endforeach; ?>
+        </div>
+      <?php else: ?>
+        <div class="rounded-2xl border border-dashed border-slate-300 px-4 py-6 text-sm text-slate-700">
+          No room types yet. Add one in the panel below.
+        </div>
+      <?php endif; ?>
+    </section>
 
     <!-- Actions row -->
     <div class="grid grid-cols-1 gap-4 lg:grid-cols-3 mb-6">
@@ -347,7 +420,8 @@ $active = 'rooms';
         <h3 class="text-lg font-bold font-alt">Bulk Update Room Type Rent</h3>
         <p class="mt-1 text-sm text-slate-600">Updates the template rent. Rooms without custom overrides will follow.</p>
 
-        <form method="post" class="mt-4 space-y-3">
+        <form method="post" class="mt-4 space-y-3"
+              data-confirm="This updates the template rent and syncs active tenants on rooms without an override. Continue?">
           <div>
             <label class="mb-1 block text-xs font-semibold text-slate-600">Room Type</label>
             <select name="bulk_room_type_id" required
@@ -367,7 +441,6 @@ $active = 'rooms';
           </div>
 
           <button name="bulk_update_rent"
-                  onclick="return confirm('This will update all rooms using this template. Continue?')"
                   class="w-full inline-flex items-center justify-center rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">
             Update Rent
           </button>
@@ -450,8 +523,16 @@ $active = 'rooms';
           <h2 class="text-lg font-bold font-alt">Rooms</h2>
           <p class="text-sm text-slate-600">Standard rooms use template rent. Custom rooms override it.</p>
         </div>
-        <div class="text-xs text-slate-500">
-          Total: <span class="font-semibold"><?= (int)count($rooms) ?></span>
+        <div class="flex items-center gap-3">
+          <div class="text-xs text-slate-500">
+            Total: <span class="font-semibold"><?= (int)count($rooms) ?></span>
+          </div>
+          <form method="post" data-confirm="Active tenants will stop using a saved rent and follow their room rent instead. Continue?">
+            <button type="submit" name="sync_tenant_rents" value="1"
+                    class="inline-flex min-h-9 items-center rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900">
+              Sync tenant rents
+            </button>
+          </form>
         </div>
       </div>
 
@@ -474,17 +555,35 @@ $active = 'rooms';
                 $sourceChip = ($r['monthly_rent'] !== null) ? chip('Custom', 'green') : chip('Standard', 'slate');
                 $status = (string)($r['status'] ?? '');
                 $statusChip = $status === 'occupied' ? chip('Occupied', 'amber') : chip('Free', 'green');
+                $rowColor = room_type_color((int)($r['room_type_id'] ?? 0), (string)($r['room_type'] ?? ''));
+                $isCustomRent = $r['monthly_rent'] !== null;
               ?>
               <tr class="hover:bg-slate-50">
                 <td class="px-4 py-3 font-semibold"><?= e($r['room_number'] ?? '') ?></td>
-                <td class="px-4 py-3"><?= e($r['room_type'] ?? '') ?></td>
-                <td class="px-4 py-3 font-semibold font-alt">UGX <?= e(money(effectiveRent($r))) ?></td>
+                <td class="px-4 py-3">
+                  <span class="inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold leading-4"
+                        style="background: <?= e($rowColor['wash']) ?>; color: <?= e($rowColor['deep']) ?>">
+                    <?= e($r['room_type'] ?? '—') ?>
+                  </span>
+                </td>
+                <td class="px-4 py-3 font-semibold font-alt">
+                  <span class="inline-flex items-center gap-2">
+                    <?php if (!$isCustomRent): ?>
+                      <span class="h-4 w-[3px] shrink-0 rounded-full" style="background: <?= e($rowColor['wash']) ?>" aria-hidden="true"></span>
+                    <?php endif; ?>
+                    UGX <?= e(money(effectiveRent($r))) ?>
+                  </span>
+                </td>
                 <td class="px-4 py-3"><?= $sourceChip ?></td>
                 <td class="px-4 py-3"><?= $statusChip ?></td>
                 <td class="px-4 py-3">
                   <button type="button"
-                          onclick="openEditModal(<?= (int)$r['id'] ?>,<?= $r['monthly_rent'] !== null ? (int)$r['monthly_rent'] : 'null' ?>)"
-                          class="inline-flex items-center rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">
+                          data-edit-room
+                          data-room-id="<?= (int)$r['id'] ?>"
+                          data-room-number="<?= e($r['room_number'] ?? '') ?>"
+                          data-room-rent="<?= $r['monthly_rent'] !== null ? (int)$r['monthly_rent'] : '' ?>"
+                          data-template-rent="<?= (int)($r['default_monthly_rent'] ?? 0) ?>"
+                          class="inline-flex items-center rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900">
                     Edit rent
                   </button>
                 </td>
@@ -497,18 +596,18 @@ $active = 'rooms';
     </div>
 
     <!-- Modal -->
-    <div id="editModal" class="hidden fixed inset-0 z-50">
-      <div class="absolute inset-0 bg-black/40 modal-backdrop" onclick="closeModal()"></div>
+    <div id="editModal" class="hidden fixed inset-0 z-50" role="dialog" aria-modal="true" aria-labelledby="editRentTitle">
+      <div class="absolute inset-0 bg-black/40 modal-backdrop" data-close-modal></div>
 
       <div class="relative mx-auto mt-24 w-[92%] max-w-md rounded-2xl border border-slate-200 bg-white shadow-lg">
         <div class="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
           <div>
-            <h3 class="text-lg font-bold font-alt">Edit Room Rent</h3>
-            <p class="text-sm text-slate-600">Leave blank to use the template rent.</p>
+            <h3 id="editRentTitle" class="text-lg font-bold font-alt">Edit room rent</h3>
+            <p id="editRoomName" class="text-sm text-slate-600">Room</p>
           </div>
           <button type="button"
-                  onclick="closeModal()"
-                  class="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold hover:bg-slate-50">
+                  data-close-modal
+                  class="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900">
             Close
           </button>
         </div>
@@ -517,20 +616,21 @@ $active = 'rooms';
           <input type="hidden" name="edit_room_id" id="edit_room_id">
 
           <div>
-            <label class="mb-1 block text-xs font-semibold text-slate-600">Monthly rent override (UGX)</label>
-            <input type="number" name="monthly_rent" id="edit_monthly_rent"
-                   placeholder="Leave blank to use template"
+            <label for="edit_monthly_rent" class="mb-1 block text-xs font-semibold text-slate-600">Monthly rent override (UGX)</label>
+            <input type="number" name="monthly_rent" id="edit_monthly_rent" min="0" step="1"
+                   placeholder="Leave blank to use the template rent"
                    class="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-400">
+            <p class="mt-2 text-xs leading-5 text-slate-500">Active tenants in this room follow the saved rent. Leave it blank to fall back to the room type template.</p>
           </div>
 
           <div class="flex items-center gap-2">
             <button type="submit"
-                    class="flex-1 inline-flex items-center justify-center rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">
+                    class="flex-1 inline-flex items-center justify-center rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900">
               Save
             </button>
             <button type="button"
-                    onclick="closeModal()"
-                    class="flex-1 inline-flex items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">
+                    data-close-modal
+                    class="flex-1 inline-flex items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900">
               Cancel
             </button>
           </div>
@@ -539,5 +639,71 @@ $active = 'rooms';
     </div>
 
   </main>
+
+  <script nonce="<?= e(csp_nonce()) ?>">
+    (() => {
+      const modal = document.getElementById('editModal');
+      const roomIdInput = document.getElementById('edit_room_id');
+      const rentInput = document.getElementById('edit_monthly_rent');
+      const roomName = document.getElementById('editRoomName');
+
+      if (!modal || !roomIdInput || !rentInput || !roomName) {
+        return;
+      }
+
+      let lastTrigger = null;
+
+      const openModal = (trigger) => {
+        lastTrigger = trigger;
+        roomIdInput.value = trigger.getAttribute('data-room-id') || '';
+
+        const rent = trigger.getAttribute('data-room-rent') || '';
+        rentInput.value = rent;
+
+        const templateRent = trigger.getAttribute('data-template-rent') || '';
+        rentInput.placeholder = templateRent !== ''
+          ? 'Template: UGX ' + Number(templateRent).toLocaleString()
+          : 'Leave blank to use the template rent';
+
+        roomName.textContent = 'Room ' + (trigger.getAttribute('data-room-number') || '');
+        modal.classList.remove('hidden');
+        rentInput.focus();
+      };
+
+      const closeModal = () => {
+        modal.classList.add('hidden');
+        if (lastTrigger) {
+          lastTrigger.focus();
+        }
+      };
+
+      document.addEventListener('click', (event) => {
+        const editTrigger = event.target.closest('[data-edit-room]');
+        if (editTrigger) {
+          event.preventDefault();
+          openModal(editTrigger);
+          return;
+        }
+
+        if (event.target.closest('[data-close-modal]')) {
+          event.preventDefault();
+          closeModal();
+        }
+      });
+
+      document.addEventListener('submit', (event) => {
+        const form = event.target.closest('form[data-confirm]');
+        if (form && !window.confirm(form.getAttribute('data-confirm'))) {
+          event.preventDefault();
+        }
+      });
+
+      document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && !modal.classList.contains('hidden')) {
+          closeModal();
+        }
+      });
+    })();
+  </script>
 </body>
 </html>

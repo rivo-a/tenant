@@ -409,7 +409,7 @@ $active = 'payments';
                   <div class="flex flex-col gap-3 sm:flex-row">
                     <input id="verification_code" name="verification_code" value="<?= e($verificationCode) ?>" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{4}" maxlength="4" placeholder="4 digits" required class="min-h-11 w-full rounded-xl border <?= $error && str_contains($error, 'could not be completed') ? 'border-red-400 ring-2 ring-red-100' : 'border-slate-300' ?> bg-white px-3 py-2 text-sm tracking-[0.2em] outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-200 sm:max-w-xs" aria-describedby="verification-hint <?= $error && str_contains($error, 'could not be completed') ? 'verification-code-error' : '' ?>">
                     
-                    <button type="submit" class="inline-flex min-h-11 items-center justify-center rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900" onclick="this.disabled=true; this.innerText='Processing...';">Confirm payment</button>
+                    <button type="submit" class="inline-flex min-h-11 items-center justify-center rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900">Confirm payment</button>
                   </div>
                   <p id="verification-hint" class="text-xs text-slate-500">Use today’s 4-digit code. The payment stays Pending if the code does not match.</p>
                   <?php if ($error && str_contains($error, 'could not be completed')): ?><p id="verification-code-error" class="text-sm font-medium text-red-700" role="alert">Check today’s code and try again.</p><?php endif; ?>
@@ -424,7 +424,7 @@ $active = 'payments';
                   <input type="hidden" name="payment_id" value="<?= (int)$selectedPayment['id'] ?>">
                   <input type="hidden" name="status" value="<?= e($status) ?>">
                   <input type="hidden" name="q" value="<?= e($search) ?>">
-                  <button type="submit" class="inline-flex min-h-11 w-full items-center justify-center rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900 sm:w-auto" onclick="this.disabled=true; this.innerText='Processing...';">Mark done</button>
+                  <button type="submit" class="inline-flex min-h-11 w-full items-center justify-center rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900 sm:w-auto">Mark done</button>
                 </form>
               </div>
             <?php else: ?>
@@ -436,6 +436,23 @@ $active = 'payments';
     </section>
   </main>
 
+  <script nonce="<?= e(csp_nonce()) ?>">
+    (() => {
+      // Inline onclick is blocked by the page CSP, so the busy state is applied here.
+      document.querySelectorAll('form').forEach((form) => {
+        form.addEventListener('submit', () => {
+          const button = form.querySelector('button[type="submit"]');
+          if (!button) {
+            return;
+          }
+          window.setTimeout(() => {
+            button.disabled = true;
+            button.textContent = 'Processing…';
+          }, 0);
+        });
+      });
+    })();
+  </script>
  <script src="assets/js/verification.js"></script>
 </body>
 </html>

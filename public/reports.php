@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/../core/bootstrap.php';
+require_once __DIR__ . '/../services/ArrearsService.php';
 
 require_login();
 
@@ -37,6 +38,7 @@ $paymentSummary = [
     'verified_income' => 0,
     'verified_payment_count' => 0,
     'pending_payment_count' => 0,
+    'pending_income' => 0,
 ];
 $kpi = [
     'active_tenants' => 0,
@@ -44,16 +46,23 @@ $kpi = [
 ];
 $monthlyByMonth = [];
 $outstandingRows = [];
+$arrearsTotals = [
+    'tenants' => 0,
+    'owed_tenants' => 0,
+    'expected' => 0.0,
+    'verified' => 0.0,
+    'verified_applied' => 0.0,
+    'pending' => 0.0,
+    'balance' => 0.0,
+    'overdue_tenants' => 0,
+    'overdue_balance' => 0.0,
+];
 $payments = [];
 
-$rentExpression = "COALESCE(
-    NULLIF(t.monthly_rent, 0),
-    NULLIF(r.monthly_rent, 0),
-    rt.default_monthly_rent,
-    0
-)";
-$paymentMonthExpression = "COALESCE(NULLIF(p.payment_month, ''), strftime('%Y-%m', p.payment_date))";
-$verifiedPaymentExpression = "LOWER(COALESCE(p.verification_status, 'done')) IN ('confirmed', 'done')";
+$rentExpression = rent_expression('t', 'r', 'rt');
+$paymentMonthExpression = payment_month_sql('p');
+$verifiedPaymentExpression = payment_verified_sql('p');
+$pendingPaymentExpression = payment_pending_sql('p');
 
 try {
     $roomTypesStmt = $pdo->query(
@@ -79,7 +88,8 @@ try {
         "SELECT
             COALESCE(SUM(CASE WHEN {$verifiedPaymentExpression} THEN p.amount ELSE 0 END), 0) AS verified_income,
             COALESCE(SUM(CASE WHEN {$verifiedPaymentExpression} THEN 1 ELSE 0 END), 0) AS verified_payment_count,
-            COALESCE(SUM(CASE WHEN LOWER(COALESCE(p.verification_status, 'done')) = 'pending' THEN 1 ELSE 0 END), 0) AS pending_payment_count
+            COALESCE(SUM(CASE WHEN {$pendingPaymentExpression} THEN 1 ELSE 0 END), 0) AS pending_payment_count,
+            COALESCE(SUM(CASE WHEN {$pendingPaymentExpression} THEN p.amount ELSE 0 END), 0) AS pending_income
          FROM payments p
          JOIN tenants t ON t.id = p.tenant_id
          LEFT JOIN rooms r ON r.id = t.room_id
@@ -172,46 +182,16 @@ try {
         ];
     }
 
-    $outstandingStmt = $pdo->prepare(
-        "SELECT
-            t.id AS tenant_id,
-            t.full_name,
-            r.room_number,
-            {$rentExpression} AS rent,
-            COALESCE(SUM(p.amount), 0) AS paid,
-            MAX(0, {$rentExpression} - COALESCE(SUM(p.amount), 0)) AS balance
-         FROM tenants t
-         LEFT JOIN rooms r ON r.id = t.room_id
-         LEFT JOIN room_types rt ON rt.id = r.room_type_id
-         LEFT JOIN payments p
-           ON p.tenant_id = t.id
-          AND p.admin_id = :payment_admin_id
-          AND {$paymentMonthExpression} = :current_month
-          AND {$verifiedPaymentExpression}
-         WHERE t.admin_id = :tenant_admin_id
-           AND LOWER(COALESCE(t.status, 'active')) = 'active'
-           AND t.exit_date IS NULL
-           {$roomTypeFilter}
-         GROUP BY
-            t.id,
-            t.full_name,
-            r.room_number,
-            t.monthly_rent,
-            r.monthly_rent,
-            rt.default_monthly_rent
-         HAVING MAX(0, {$rentExpression} - COALESCE(SUM(p.amount), 0)) > 0
-         ORDER BY balance DESC, t.full_name ASC"
-    );
-    $outstandingParams = [
-        ':payment_admin_id' => $adminId,
-        ':current_month' => $currentMonth,
-        ':tenant_admin_id' => $adminId,
-    ];
-    if ($roomTypeId > 0) {
-        $outstandingParams[':room_type_id'] = $roomTypeId;
-    }
-    $outstandingStmt->execute($outstandingParams);
-    $outstandingRows = $outstandingStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    /*
+     * Outstanding rent is arrears since move-in, not a single calendar month.
+     * ArrearsService is the same engine the dashboard uses.
+     */
+    $arrears = (new ArrearsService($pdo))->getArrears($adminId, $roomTypeId, $now);
+    $outstandingRows = array_values(array_filter(
+        $arrears['rows'],
+        static fn(array $row): bool => (float)($row['balance'] ?? 0) > 0.00001
+    ));
+    $arrearsTotals = $arrears['totals'];
 
     $paymentLedgerStmt = $pdo->prepare(
         "SELECT
@@ -253,6 +233,7 @@ try {
         'verified_income' => 0,
         'verified_payment_count' => 0,
         'pending_payment_count' => 0,
+        'pending_income' => 0,
     ];
     $kpi = [
         'active_tenants' => 0,
@@ -260,6 +241,17 @@ try {
     ];
     $monthlyByMonth = [];
     $outstandingRows = [];
+    $arrearsTotals = [
+        'tenants' => 0,
+        'owed_tenants' => 0,
+        'expected' => 0.0,
+        'verified' => 0.0,
+        'verified_applied' => 0.0,
+        'pending' => 0.0,
+        'balance' => 0.0,
+        'overdue_tenants' => 0,
+        'overdue_balance' => 0.0,
+    ];
     $payments = [];
 }
 
@@ -345,10 +337,14 @@ $reportChip = static function (string $label, string $tone = 'slate'): string {
 $verifiedIncome = (float)($paymentSummary['verified_income'] ?? 0);
 $verifiedPaymentCount = (int)($paymentSummary['verified_payment_count'] ?? 0);
 $pendingPaymentCount = (int)($paymentSummary['pending_payment_count'] ?? 0);
+$pendingIncome = (float)($paymentSummary['pending_income'] ?? 0);
 $outstandingTotal = array_sum(array_map(
     static fn(array $row): float => max(0, (float)($row['balance'] ?? 0)),
     $outstandingRows
 ));
+$arrearsExpected = (float)($arrearsTotals['expected'] ?? 0);
+$arrearsVerified = (float)($arrearsTotals['verified_applied'] ?? 0);
+$arrearsAsOfLabel = $now->format('F Y');
 $monthlyRows = [];
 $maximumMonthlyTotal = 0.0;
 for ($monthNumber = 1; $monthNumber <= 12; $monthNumber++) {
@@ -524,18 +520,22 @@ $active = 'reports';
         <p class="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Financial snapshot</p>
         <h2 id="financial-snapshot-title" class="mt-1 font-alt text-xl font-bold">Verified collections</h2>
       </div>
-      <p class="text-xs text-slate-500">Done and confirmed records only · <?= e($scopeLabel) ?></p>
+      <p class="text-xs text-slate-500">Verified = done or confirmed, <?= e($scopeLabel) ?></p>
     </div>
 
-    <div class="grid grid-cols-2 gap-px overflow-hidden border border-slate-200 bg-slate-200 lg:grid-cols-4">
+    <div class="grid grid-cols-2 gap-px overflow-hidden border border-slate-200 bg-slate-200 lg:grid-cols-5">
       <div class="bg-white p-4 sm:p-5">
         <p class="text-xs font-semibold text-slate-500">Verified collections</p>
         <p class="mt-2 font-alt text-2xl font-bold tabular-nums tracking-tight text-slate-950 sm:text-3xl"><?= e($formatUgx($verifiedIncome)) ?></p>
       </div>
       <div class="bg-white p-4 sm:p-5">
+        <p class="text-xs font-semibold text-slate-500">Pending verification</p>
+        <p class="mt-2 font-alt text-2xl font-bold tabular-nums tracking-tight text-amber-700"><?= e($formatUgx($pendingIncome)) ?></p>
+        <p class="mt-1 text-xs text-amber-700"><?= number_format($pendingPaymentCount) ?> record(s) awaiting a code</p>
+      </div>
+      <div class="bg-white p-4 sm:p-5">
         <p class="text-xs font-semibold text-slate-500">Verified payments</p>
         <p class="mt-2 font-alt text-2xl font-bold tabular-nums text-slate-950"><?= number_format($verifiedPaymentCount) ?></p>
-        <?php if ($pendingPaymentCount > 0): ?><p class="mt-1 text-xs text-amber-700"><?= number_format($pendingPaymentCount) ?> pending review</p><?php endif; ?>
       </div>
       <div class="bg-white p-4 sm:p-5">
         <p class="text-xs font-semibold text-slate-500">Active tenants</p>
@@ -594,27 +594,42 @@ $active = 'reports';
   </section>
 
   <section class="mt-10 border-t border-slate-200 pt-6" aria-labelledby="outstanding-title">
-    <div class="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+    <div class="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
       <div>
-        <p class="text-xs font-semibold uppercase tracking-[0.16em] text-red-700">Collection exceptions</p>
-        <h2 id="outstanding-title" class="mt-1 font-alt text-xl font-bold">Outstanding rent</h2>
-        <p class="mt-1 text-sm text-slate-600">Active tenants with a positive balance for <?= e($currentMonthScopeLabel) ?>. Only confirmed and done payments reduce the balance.</p>
+        <h2 id="outstanding-title" class="font-alt text-xl font-bold">Outstanding rent</h2>
+        <p class="mt-1 max-w-2xl text-sm text-slate-600">Rent charged since move-in minus verified payments, as of <?= e($arrearsAsOfLabel) ?>. Pending payments are listed but never deducted.</p>
       </div>
-      <div class="mt-2 text-left sm:mt-0 sm:text-right">
-        <p class="text-xs text-slate-500"><?= number_format(count($outstandingRows)) ?> tenant(s)</p>
+      <div class="text-left sm:text-right">
+        <p class="text-xs text-slate-500"><?= number_format(count($outstandingRows)) ?> tenant(s) owing</p>
         <p class="mt-1 font-alt text-lg font-bold tabular-nums text-red-700"><?= e($formatUgx($outstandingTotal)) ?></p>
       </div>
     </div>
 
+    <dl class="mt-4 grid grid-cols-2 gap-px overflow-hidden border border-slate-200 bg-slate-200 sm:grid-cols-3">
+      <div class="bg-white px-4 py-3">
+        <dt class="text-xs font-semibold text-slate-500">Billed since move-in</dt>
+        <dd class="mt-1 font-alt text-base font-bold tabular-nums text-slate-900"><?= e($formatUgx($arrearsExpected)) ?></dd>
+      </div>
+      <div class="bg-white px-4 py-3">
+        <dt class="text-xs font-semibold text-slate-500">Verified paid</dt>
+        <dd class="mt-1 font-alt text-base font-bold tabular-nums text-slate-900"><?= e($formatUgx($arrearsVerified)) ?></dd>
+      </div>
+      <div class="bg-white px-4 py-3">
+        <dt class="text-xs font-semibold text-slate-500">Still owed</dt>
+        <dd class="mt-1 font-alt text-base font-bold tabular-nums text-red-700"><?= e($formatUgx((float)($arrearsTotals['balance'] ?? 0))) ?></dd>
+      </div>
+    </dl>
+
     <?php if ($outstandingRows): ?>
       <div class="mt-4 hidden overflow-x-auto border-y border-slate-200 md:block">
         <table class="min-w-full text-sm">
-          <caption class="sr-only">Outstanding rent for <?= e($currentMonthScopeLabel) ?></caption>
+          <caption class="sr-only">Rent arrears for active tenants as of <?= e($arrearsAsOfLabel) ?></caption>
           <thead class="bg-slate-100 text-slate-600">
             <tr>
               <th scope="col" class="px-4 py-3 text-left font-semibold">Tenant</th>
               <th scope="col" class="px-4 py-3 text-left font-semibold">Room</th>
               <th scope="col" class="px-4 py-3 text-left font-semibold">Rent</th>
+              <th scope="col" class="px-4 py-3 text-left font-semibold">Owed since</th>
               <th scope="col" class="px-4 py-3 text-left font-semibold">Verified paid</th>
               <th scope="col" class="px-4 py-3 text-left font-semibold">Balance</th>
               <th scope="col" class="px-4 py-3 text-left font-semibold">Status</th>
@@ -624,42 +639,61 @@ $active = 'reports';
             <?php foreach ($outstandingRows as $outstanding): ?>
               <?php
                 $rent = max(0, (float)($outstanding['rent'] ?? 0));
-                $paid = max(0, (float)($outstanding['paid'] ?? 0));
-                $balance = max(0, (float)($outstanding['balance'] ?? ($rent - $paid)));
-                $rentStatus = $paid > 0 ? 'Partial' : 'Unpaid';
+                $paid = max(0, (float)($outstanding['verified_applied'] ?? 0));
+                $pendingPaid = max(0, (float)($outstanding['pending_paid'] ?? 0));
+                $balance = max(0, (float)($outstanding['balance'] ?? 0));
+                $monthsBehind = (int)($outstanding['months_behind'] ?? 0);
+                $rentStatus = $monthsBehind >= 2
+                    ? $monthsBehind . ' months behind'
+                    : ($paid > 0 ? 'Part paid' : 'Unpaid');
+                $rentTone = $monthsBehind >= 2 || $paid <= 0 ? 'red' : 'amber';
               ?>
               <tr>
                 <th scope="row" class="px-4 py-3 text-left font-semibold text-slate-900"><?= e($outstanding['full_name'] ?? 'Unknown tenant') ?></th>
-                <td class="px-4 py-3 text-slate-700"><?= e($outstanding['room_number'] ?? '—') ?></td>
+                <td class="px-4 py-3 text-slate-700"><?= e($outstanding['room_number'] !== '' ? $outstanding['room_number'] : '—') ?></td>
                 <td class="whitespace-nowrap px-4 py-3 tabular-nums text-slate-700"><?= e($formatUgx($rent)) ?></td>
-                <td class="whitespace-nowrap px-4 py-3 tabular-nums text-slate-700"><?= e($formatUgx($paid)) ?></td>
+                <td class="whitespace-nowrap px-4 py-3 text-slate-700"><?= e($outstanding['owed_since_label'] ?? '—') ?></td>
+                <td class="whitespace-nowrap px-4 py-3 tabular-nums text-slate-700">
+                  <?= e($formatUgx($paid)) ?>
+                  <?php if ($pendingPaid > 0): ?><span class="mt-0.5 block text-xs text-amber-700"><?= e($formatUgx($pendingPaid)) ?> pending</span><?php endif; ?>
+                </td>
                 <td class="whitespace-nowrap px-4 py-3 font-bold tabular-nums text-red-700"><?= e($formatUgx($balance)) ?></td>
-                <td class="px-4 py-3"><?= $reportChip($rentStatus, $rentStatus === 'Partial' ? 'amber' : 'red') ?></td>
+                <td class="px-4 py-3"><?= $reportChip($rentStatus, $rentTone) ?></td>
               </tr>
             <?php endforeach; ?>
           </tbody>
         </table>
       </div>
 
-      <ul class="mt-4 divide-y divide-slate-200 border-y border-slate-200 md:hidden" aria-label="Outstanding rent tenants">
+      <ul class="mt-4 divide-y divide-slate-200 border-y border-slate-200 md:hidden" aria-label="Rent arrears for active tenants">
         <?php foreach ($outstandingRows as $outstanding): ?>
           <?php
             $rent = max(0, (float)($outstanding['rent'] ?? 0));
-            $paid = max(0, (float)($outstanding['paid'] ?? 0));
-            $balance = max(0, (float)($outstanding['balance'] ?? ($rent - $paid)));
-            $rentStatus = $paid > 0 ? 'Partial' : 'Unpaid';
+            $paid = max(0, (float)($outstanding['verified_applied'] ?? 0));
+            $pendingPaid = max(0, (float)($outstanding['pending_paid'] ?? 0));
+            $balance = max(0, (float)($outstanding['balance'] ?? 0));
+            $monthsBehind = (int)($outstanding['months_behind'] ?? 0);
+            $rentStatus = $monthsBehind >= 2
+                ? $monthsBehind . ' months behind'
+                : ($paid > 0 ? 'Part paid' : 'Unpaid');
+            $rentTone = $monthsBehind >= 2 || $paid <= 0 ? 'red' : 'amber';
           ?>
           <li class="py-4 first:pt-3 last:pb-3">
             <div class="flex items-start justify-between gap-3">
               <div class="min-w-0">
                 <p class="truncate font-semibold text-slate-900"><?= e($outstanding['full_name'] ?? 'Unknown tenant') ?></p>
-                <p class="mt-1 text-xs text-slate-500">Room <?= e($outstanding['room_number'] ?? '—') ?> · <?= e($currentMonthLabel) ?></p>
+                <p class="mt-1 text-xs text-slate-500">Room <?= e($outstanding['room_number'] !== '' ? $outstanding['room_number'] : '—') ?></p>
+                <p class="mt-1 text-xs text-slate-500">Owed since <?= e($outstanding['owed_since_label'] ?? '—') ?></p>
               </div>
-              <?= $reportChip($rentStatus, $rentStatus === 'Partial' ? 'amber' : 'red') ?>
+              <?= $reportChip($rentStatus, $rentTone) ?>
             </div>
             <div class="mt-3 grid grid-cols-3 gap-3 text-xs">
               <div><p class="text-slate-500">Rent</p><p class="mt-1 font-semibold tabular-nums text-slate-800"><?= e($formatUgx($rent)) ?></p></div>
-              <div><p class="text-slate-500">Paid</p><p class="mt-1 font-semibold tabular-nums text-slate-800"><?= e($formatUgx($paid)) ?></p></div>
+              <div>
+                <p class="text-slate-500">Verified paid</p>
+                <p class="mt-1 font-semibold tabular-nums text-slate-800"><?= e($formatUgx($paid)) ?></p>
+                <?php if ($pendingPaid > 0): ?><p class="mt-1 text-amber-700"><?= e($formatUgx($pendingPaid)) ?> pending</p><?php endif; ?>
+              </div>
               <div><p class="text-slate-500">Balance</p><p class="mt-1 font-bold tabular-nums text-red-700"><?= e($formatUgx($balance)) ?></p></div>
             </div>
           </li>
@@ -667,8 +701,8 @@ $active = 'reports';
       </ul>
     <?php else: ?>
       <div class="mt-4 border-y border-dashed border-slate-300 py-8 text-sm text-slate-700">
-        <p class="font-semibold text-slate-900">No outstanding rent for <?= e($currentMonthScopeLabel) ?>.</p>
-        <p class="mt-1">The collection queue is clear for this scope.</p>
+        <p class="font-semibold text-slate-900">No outstanding rent as of <?= e($arrearsAsOfLabel) ?>.</p>
+        <p class="mt-1">Every active tenant is paid up to the current month.</p>
       </div>
     <?php endif; ?>
   </section>

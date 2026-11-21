@@ -298,19 +298,57 @@ class TenantService
             throw new RuntimeException('Invalid move-in date.');
         }
 
-        $stmt = $this->pdo->prepare("
-            UPDATE tenants
-            SET full_name = ?, phone = ?, email = ?, move_in_date = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE id = ? AND admin_id = ?
-        ");
-        $updated = $stmt->execute([
-            $fullName,
-            $phone,
-            $email,
-            $moveInDate,
-            $tenantId,
-            $adminId,
-        ]);
+        /*
+         * Optional negotiated rent. Blank means the tenant follows the room rent,
+         * which is the default source of truth for occupied rooms.
+         */
+        $hasRentField = array_key_exists('monthly_rent', $data);
+        $monthlyRent = null;
+        if ($hasRentField) {
+            $rentRaw = is_scalar($data['monthly_rent'] ?? null)
+                ? trim((string)$data['monthly_rent'])
+                : '';
+
+            if ($rentRaw !== '') {
+                if (!is_numeric($rentRaw) || (float)$rentRaw < 0) {
+                    throw new RuntimeException('Invalid rent amount.');
+                }
+                $monthlyRent = (float)$rentRaw > 0 ? (float)$rentRaw : null;
+            }
+        }
+
+        if ($hasRentField) {
+            $stmt = $this->pdo->prepare("
+                UPDATE tenants
+                SET full_name = ?, phone = ?, email = ?, move_in_date = ?, monthly_rent = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND admin_id = ?
+            ");
+            $updated = $stmt->execute([
+                $fullName,
+                $phone,
+                $email,
+                $moveInDate,
+                $monthlyRent,
+                $tenantId,
+                $adminId,
+            ]);
+        } else {
+            $stmt = $this->pdo->prepare("
+                UPDATE tenants
+                SET full_name = ?, phone = ?, email = ?, move_in_date = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND admin_id = ?
+            ");
+            $updated = $stmt->execute([
+                $fullName,
+                $phone,
+                $email,
+                $moveInDate,
+                $tenantId,
+                $adminId,
+            ]);
+        }
 
         if (!$updated) {
             throw new RuntimeException('Tenant details could not be updated.');

@@ -43,6 +43,17 @@ unset($_SESSION['success']);
 $error = '';
 $paymentFormData = [];
 
+// Payment recorded just now: keep its id so the operator can verify it straight away.
+$lastPaymentId = (int)($_SESSION['last_payment_id'] ?? 0);
+$lastPaymentMonth = is_scalar($_SESSION['last_payment_month'] ?? null) ? (string)$_SESSION['last_payment_month'] : '';
+unset($_SESSION['last_payment_id'], $_SESSION['last_payment_month']);
+
+$pendingQueueStmt = $pdo->prepare(
+    'SELECT COUNT(*) FROM payments WHERE admin_id = :admin_id AND ' . payment_pending_sql('payments')
+);
+$pendingQueueStmt->execute([':admin_id' => $admin_id]);
+$pendingVerificationCount = (int)$pendingQueueStmt->fetchColumn();
+
 $postString = static function (string $key, string $default = ''): string {
     $value = $_POST[$key] ?? $default;
     return is_scalar($value) ? trim((string)$value) : $default;
@@ -130,6 +141,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['receive_payment'])) {
         $successMessage = (($result['status'] ?? '') === 'paid')
             ? 'Payment recorded and queued for verification. Month fully paid.'
             : 'Payment recorded and queued for verification. Partial payment recorded.';
+
+        $_SESSION['last_payment_id'] = (int)($result['payment_ids'][0] ?? 0);
+        $_SESSION['last_payment_month'] = (string)($result['payment_month'] ?? '');
 
         if (function_exists('logAudit')) {
             try {
@@ -244,8 +258,11 @@ $active = 'payments';
           Payments History
         </a>
         <a href="payment_verification.php"
-           class="inline-flex min-h-11 items-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">
+           class="inline-flex min-h-11 items-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">
           Verification queue
+          <?php if ($pendingVerificationCount > 0): ?>
+            <span class="inline-flex min-w-6 items-center justify-center rounded-full bg-amber-100 px-1.5 py-0.5 text-xs font-bold text-amber-800"><?= number_format($pendingVerificationCount) ?></span>
+          <?php endif; ?>
         </a>
         <a href="reports.php"
            class="inline-flex min-h-11 items-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">
@@ -255,8 +272,21 @@ $active = 'payments';
     </div>
 
     <?php if ($success): ?>
-      <div class="mb-5 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900" role="status">
-        <?= e($success) ?>
+      <div class="mb-5 flex flex-col gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900 sm:flex-row sm:items-center sm:justify-between" role="status">
+        <div>
+          <p class="font-semibold"><?= e($success) ?></p>
+          <?php if ($lastPaymentId > 0): ?>
+            <p class="mt-1 text-emerald-800">
+              It counts as collected only once verified<?= $lastPaymentMonth !== '' ? ' for ' . e(date('F Y', strtotime($lastPaymentMonth . '-01'))) : '' ?>.
+            </p>
+          <?php endif; ?>
+        </div>
+        <?php if ($lastPaymentId > 0): ?>
+          <a href="payment_verification.php?payment_id=<?= (int)$lastPaymentId ?>&status=pending"
+             class="inline-flex min-h-11 shrink-0 items-center justify-center rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900">
+            Verify payment
+          </a>
+        <?php endif; ?>
       </div>
     <?php endif; ?>
 
@@ -335,6 +365,7 @@ $active = 'payments';
         <div>
           <h2 id="payment-roster-heading" class="font-alt text-lg font-bold">Active tenant payment roster</h2>
           <p class="text-sm text-slate-600">Exited tenants are excluded from payment actions.</p>
+          <p class="text-sm text-slate-600">Balance due uses verified payments only; pending submissions are listed under Verified.</p>
         </div>
         <div id="paymentLoadingStatus" class="text-xs text-slate-500" role="status" aria-live="polite"></div>
       </div>
@@ -366,7 +397,7 @@ $active = 'payments';
               </th>
               <th scope="col" data-sort-header="outstanding_balance" aria-sort="<?= e($sortAria('outstanding_balance')) ?>" class="px-4 py-3 text-left font-semibold">
                 <button type="button" data-sort="outstanding_balance" class="inline-flex min-h-11 items-center rounded-lg text-left hover:text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900">
-                  Outstanding <span aria-hidden="true" class="ml-1 text-slate-400">↕</span>
+                  Balance due <span aria-hidden="true" class="ml-1 text-slate-400">↕</span>
                 </button>
               </th>
               <th scope="col" class="px-4 py-3 text-left font-semibold">Receive payment</th>
@@ -394,7 +425,7 @@ $active = 'payments';
     </section>
   </main>
 
-  <script>
+  <script nonce="<?= e(csp_nonce()) ?>">
     (() => {
       const filterForm = document.getElementById('paymentFilters');
       const searchInput = document.getElementById('search');
@@ -531,10 +562,17 @@ $active = 'payments';
         if (!form) return;
 
         const button = form.querySelector('[data-payment-submit]');
-        if (button) {
+        if (!button) return;
+
+        /*
+         * Defer the disable until the submit has been dispatched: disabling a
+         * submit button inside its own submit handler removes it from the
+         * serialised payload.
+         */
+        window.setTimeout(() => {
           button.disabled = true;
           button.textContent = button.dataset.submittingLabel || 'Saving…';
-        }
+        }, 0);
       });
 
       window.loadTenants = loadTenants;
