@@ -9,16 +9,25 @@ error_reporting(E_ALL);
  */
 function log_error($message)
 {
-    $file = BASE_PATH . '/storage/logs/app.log';
+    $dir = BASE_PATH . '/storage/logs';
+    $file = $dir . '/app.log';
 
-    // Only write if file exists
-    if (!file_exists($file)) {
-        // Try to create it, fail silently if cannot
-        @file_put_contents($file, '');
+    /*
+     * The directory is git-ignored, so a fresh clone, a deploy or a history
+     * rewrite can leave it missing. Without this the logger failed, and every
+     * notice surfaced to the user as a bare 500 page.
+     */
+    if (!is_dir($dir)) {
+        @mkdir($dir, 0775, true);
     }
 
     $time = date('Y-m-d H:i:s');
-    @file_put_contents($file, "[$time] $message" . PHP_EOL, FILE_APPEND | LOCK_EX);
+    $entry = "[$time] $message" . PHP_EOL;
+
+    if (@file_put_contents($file, $entry, FILE_APPEND | LOCK_EX) === false) {
+        // Last resort so the message is never lost completely.
+        error_log('[tenant-system] ' . $message);
+    }
 }
 
 // Catch all errors

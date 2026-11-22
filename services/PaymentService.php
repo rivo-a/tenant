@@ -28,7 +28,8 @@ class PaymentService
         string $paymentDate,
         int $adminId,
         string $method = 'cash',
-        string $note = ''
+        string $note = '',
+        ?int $actorId = null
     ): array {
         if (!is_finite($amount) || $amount <= 0) {
             throw new RuntimeException('Payment amount must be greater than zero.');
@@ -127,8 +128,8 @@ class PaymentService
 
                 $ins = $this->pdo->prepare("
                     INSERT INTO payments
-                        (tenant_id, admin_id, amount, payment_month, payment_date, method, note, verification_status)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
+                        (tenant_id, admin_id, amount, payment_month, payment_date, method, note, verification_status, created_by)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
                 ");
                 $ins->execute([
                     $tenantId,
@@ -138,6 +139,7 @@ class PaymentService
                     $paymentDateObject->format('Y-m-d'),
                     $method,
                     $note !== '' ? $note : null,
+                    $actorId ?? $adminId,
                 ]);
                 $paymentId = (int)$this->pdo->lastInsertId();
                 $paymentIds[] = $paymentId;
@@ -205,36 +207,27 @@ class PaymentService
         }
     }
 
-    /** @return list<array<string, mixed>> */
-    public function getVerificationQueue(int $adminId, string $status = 'all', string $search = ''): array
-    {
-        $status = strtolower(trim($status));
-        if (!in_array($status, self::ALLOWED_VERIFICATION_STATUSES, true)) {
-            $status = 'all';
-        }
-
-        $search = trim($search);
-        $sql = $this->verificationQuerySql();
+    /**
+     * One page of the verification queue. The page is cut in SQLite, not in
+     * PHP, so a business with thousands of payments never loads them all.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function getVerificationQueue(
+        int $adminId,
+        string $status = 'all',
+        string $search = '',
+        int $limit = 0,
+        int $offset = 0
+    ): array {
+        [$filterSql, $params] = $this->verificationFilters($status, $search);
         $params = [
             ':payment_admin' => $adminId,
             ':tenant_admin' => $adminId,
             ':sum_admin' => $adminId,
-        ];
+        ] + $params;
 
-        if ($status !== 'all') {
-            $sql .= ' AND record.verification_status = :verification_status';
-            $params[':verification_status'] = $status;
-        }
-
-        if ($search !== '') {
-            $sql .= ' AND (record.full_name LIKE :search_name OR record.room_number LIKE :search_room OR record.payment_month LIKE :search_month)';
-            $like = '%' . $search . '%';
-            $params[':search_name'] = $like;
-            $params[':search_room'] = $like;
-            $params[':search_month'] = $like;
-        }
-
-        $sql .= "
+        $sql = $this->verificationQuerySql() . $filterSql . "
             ORDER BY
                 CASE record.verification_status
                     WHEN 'pending' THEN 1
@@ -245,9 +238,71 @@ class PaymentService
                 record.id DESC
         ";
 
+        if ($limit > 0) {
+            $sql .= ' LIMIT :queue_limit OFFSET :queue_offset';
+        }
+
         $stmt = $this->pdo->prepare($sql);
-        $stmt->execute($params);
+
+        foreach ($params as $key => $value) {
+            $stmt->bindValue($key, $value);
+        }
+        if ($limit > 0) {
+            $stmt->bindValue(':queue_limit', $limit, PDO::PARAM_INT);
+            $stmt->bindValue(':queue_offset', max(0, $offset), PDO::PARAM_INT);
+        }
+
+        $stmt->execute();
+
         return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    }
+
+    /** Total rows matching the same filters, for paging controls. */
+    public function countVerificationQueue(int $adminId, string $status = 'all', string $search = ''): int
+    {
+        [$filterSql, $params] = $this->verificationFilters($status, $search);
+        $params = [
+            ':payment_admin' => $adminId,
+            ':tenant_admin' => $adminId,
+            ':sum_admin' => $adminId,
+        ] + $params;
+
+        $stmt = $this->pdo->prepare(
+            'SELECT COUNT(*) FROM (' . $this->verificationQuerySql() . $filterSql . ') AS queue'
+        );
+        $stmt->execute($params);
+
+        return (int)$stmt->fetchColumn();
+    }
+
+    /**
+     * @return array{0: string, 1: array<string, mixed>}
+     */
+    private function verificationFilters(string $status, string $search): array
+    {
+        $status = strtolower(trim($status));
+        if (!in_array($status, self::ALLOWED_VERIFICATION_STATUSES, true)) {
+            $status = 'all';
+        }
+
+        $sql = '';
+        $params = [];
+
+        if ($status !== 'all') {
+            $sql .= ' AND record.verification_status = :verification_status';
+            $params[':verification_status'] = $status;
+        }
+
+        $search = trim($search);
+        if ($search !== '') {
+            $sql .= ' AND (record.full_name LIKE :search_name OR record.room_number LIKE :search_room OR record.payment_month LIKE :search_month)';
+            $like = '%' . $search . '%';
+            $params[':search_name'] = $like;
+            $params[':search_room'] = $like;
+            $params[':search_month'] = $like;
+        }
+
+        return [$sql, $params];
     }
 
     /** @return array<string, mixed>|null */
@@ -289,8 +344,32 @@ class PaymentService
         return str_pad((string)$number, 4, '0', STR_PAD_LEFT);
     }
 
-    public function confirmPayment(int $paymentId, int $adminId, string $submittedCode): void
+    /**
+     * Separates recording from approving: when self-approval is not allowed,
+     * the person who entered the payment cannot confirm it.
+     */
+    private function assertNotSelfApproval(int $paymentId, int $adminId, ?int $actorId, bool $allowSelfApproval): void
     {
+        if ($allowSelfApproval || $actorId === null || $actorId <= 0) {
+            return;
+        }
+
+        $stmt = $this->pdo->prepare('SELECT created_by FROM payments WHERE id = :id AND admin_id = :admin_id');
+        $stmt->execute([':id' => $paymentId, ':admin_id' => $adminId]);
+        $creator = $stmt->fetchColumn();
+
+        if ($creator !== false && $creator !== null && (int)$creator === $actorId) {
+            throw new RuntimeException('You recorded this payment. Another authorised person must approve it.');
+        }
+    }
+
+    public function confirmPayment(
+        int $paymentId,
+        int $adminId,
+        string $submittedCode,
+        ?int $actorId = null,
+        bool $allowSelfApproval = true
+    ): void {
         $submittedCode = trim($submittedCode);
         if (!preg_match('/^\d{4}$/D', $submittedCode)) {
             throw new RuntimeException('The verification code must be exactly 4 digits.');
@@ -304,6 +383,8 @@ class PaymentService
         if ($paymentId <= 0 || $adminId <= 0) {
             throw new RuntimeException('Payment record not found.');
         }
+
+        $this->assertNotSelfApproval($paymentId, $adminId, $actorId, $allowSelfApproval);
 
         $this->pdo->beginTransaction();
         try {
@@ -343,11 +424,17 @@ class PaymentService
         );
     }
 
-    public function markPaymentDone(int $paymentId, int $adminId): void
-    {
+    public function markPaymentDone(
+        int $paymentId,
+        int $adminId,
+        ?int $actorId = null,
+        bool $allowSelfApproval = true
+    ): void {
         if ($paymentId <= 0 || $adminId <= 0) {
             throw new RuntimeException('Payment record not found.');
         }
+
+        $this->assertNotSelfApproval($paymentId, $adminId, $actorId, $allowSelfApproval);
 
         $this->pdo->beginTransaction();
         try {

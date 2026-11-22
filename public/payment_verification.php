@@ -59,11 +59,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ? trim((string)$_POST['verification_code'])
                 : '';
             $_SESSION['verification_code'] = $submittedCode;
-            $paymentService->confirmPayment($postPaymentId, $adminId, $submittedCode);
+            $paymentService->confirmPayment(
+                $postPaymentId,
+                $adminId,
+                $submittedCode,
+                (int)($_SESSION['admin_id'] ?? 0),
+                auth_role() !== 'property_manager'
+            );
             unset($_SESSION['verification_code']);
             $_SESSION['success'] = 'Payment confirmed. It is ready to be marked done.';
         } else {
-            $paymentService->markPaymentDone($postPaymentId, $adminId);
+            $paymentService->markPaymentDone(
+                $postPaymentId,
+                $adminId,
+                (int)($_SESSION['admin_id'] ?? 0),
+                auth_role() !== 'property_manager'
+            );
             $_SESSION['success'] = 'Payment verification marked done.';
         }
     } catch (Throwable $e) {
@@ -90,8 +101,27 @@ try {
     $dailyCodeError = 'The daily verification code is not configured.';
 }
 
+$pageSize = 40;
+$page = max(1, (int)($getString('page', '1')));
+$queueTotal = 0;
+$pageCount = 1;
+
 try {
-    $queue = $paymentService->getVerificationQueue($adminId, $status, $search);
+    $queueTotal = $paymentService->countVerificationQueue($adminId, $status, $search);
+    $pageCount = max(1, (int)ceil($queueTotal / $pageSize));
+
+    if ($page > $pageCount) {
+        $page = $pageCount;
+    }
+
+    $queue = $paymentService->getVerificationQueue(
+        $adminId,
+        $status,
+        $search,
+        $pageSize,
+        ($page - 1) * $pageSize
+    );
+
     $selectedPayment = $selectedId > 0
         ? $paymentService->getVerificationPayment($selectedId, $adminId)
         : null;
@@ -102,10 +132,17 @@ try {
     $error = $error !== '' ? $error : 'Unable to refresh the verification queue. Try again.';
 }
 
-// PERFORMANCE: Hard limit the queue in PHP to prevent memory exhaustion. 
-// (Ideally, pass $limit and $offset to getVerificationQueue() and handle pagination in the DB).
-$QUEUE_LIMIT = 100; 
-$queue = array_slice($queue, 0, $QUEUE_LIMIT);
+$queueShownFrom = $queueTotal > 0 ? (($page - 1) * $pageSize) + 1 : 0;
+$queueShownTo = min($queueTotal, $page * $pageSize);
+
+$pageUrl = static function (int $target) use ($status, $search, $selectedId): string {
+    return 'payment_verification.php?' . http_build_query(array_filter([
+        'status' => $status !== 'all' ? $status : null,
+        'q' => $search !== '' ? $search : null,
+        'payment_id' => $selectedId > 0 ? $selectedId : null,
+        'page' => $target > 1 ? $target : null,
+    ], static fn($value): bool => $value !== null && $value !== ''));
+};
 
 $groupOrder = ['pending', 'confirmed', 'done'];
 $queueGroups = [];
@@ -301,6 +338,26 @@ $active = 'payments';
                 </a>
               <?php endforeach; ?>
             </nav>
+
+            <?php if ($queueTotal > 0): ?>
+              <div class="mt-3 flex items-center justify-between gap-3 text-xs">
+                <p class="text-slate-500">
+                  Showing <span class="font-semibold tabular-nums text-slate-700"><?= (int)$queueShownFrom ?>–<?= (int)$queueShownTo ?></span>
+                  of <span class="font-semibold tabular-nums text-slate-700"><?= (int)$queueTotal ?></span>
+                </p>
+                <?php if ($pageCount > 1): ?>
+                  <div class="flex items-center gap-1">
+                    <?php if ($page > 1): ?>
+                      <a href="<?= e($pageUrl($page - 1)) ?>" rel="prev" class="inline-flex min-h-9 items-center rounded-lg border border-slate-300 px-2.5 font-semibold text-slate-700 hover:bg-slate-50">Previous</a>
+                    <?php endif; ?>
+                    <span class="px-1 tabular-nums text-slate-500"><?= (int)$page ?> / <?= (int)$pageCount ?></span>
+                    <?php if ($page < $pageCount): ?>
+                      <a href="<?= e($pageUrl($page + 1)) ?>" rel="next" class="inline-flex min-h-9 items-center rounded-lg border border-slate-300 px-2.5 font-semibold text-slate-700 hover:bg-slate-50">Next</a>
+                    <?php endif; ?>
+                  </div>
+                <?php endif; ?>
+              </div>
+            <?php endif; ?>
           </div>
 
           <div class="max-h-[720px] overflow-y-auto p-2 sm:p-3">

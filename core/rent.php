@@ -56,6 +56,45 @@ if (!function_exists('payment_month_sql')) {
     }
 }
 
+if (!function_exists('phone_normalize')) {
+    /**
+     * One spelling for a Ugandan mobile number so the same tenant is found
+     * whether they type "0772 123456", "0772123456" or "+256772123456".
+     * Returns '+256XXXXXXXXX' for recognised numbers, '' for blanks, and the
+     * digits unchanged when the shape is unfamiliar (international tenants).
+     */
+    function phone_normalize(?string $phone): string
+    {
+        $raw = trim((string)$phone);
+        if ($raw === '') {
+            return '';
+        }
+
+        $plus = str_starts_with($raw, '+');
+        $digits = preg_replace('/\D+/', '', $raw) ?? '';
+        if ($digits === '') {
+            return '';
+        }
+
+        // +256 7XX XXX XXX / 256 7XX XXX XXX
+        if (str_starts_with($digits, '256') && strlen($digits) === 12) {
+            return '+' . $digits;
+        }
+
+        // 07XX XXX XXX -> +2567XX XXX XXX
+        if (!$plus && strlen($digits) === 10 && str_starts_with($digits, '0')) {
+            return '+256' . substr($digits, 1);
+        }
+
+        // 7XX XXX XXX, and legacy 0XXXXXXXX entries missing a digit -> +2567XX
+        if (!$plus && strlen($digits) === 9) {
+            return '+256' . ltrim($digits, '0');
+        }
+
+        return $plus ? '+' . $digits : $digits;
+    }
+}
+
 if (!function_exists('room_rent_month')) {
     /** Normalise a date to the first day of its month at midnight. */
     function room_rent_month(DateTimeImmutable $date): DateTimeImmutable
@@ -131,6 +170,7 @@ if (!function_exists('clear_room_tenant_rent_snapshots')) {
               AND LOWER(COALESCE(status, 'active')) = 'active'
               AND exit_date IS NULL
               AND monthly_rent IS NOT NULL
+              AND COALESCE(rent_is_override, 0) = 0
         ");
         $stmt->execute([':room_id' => $roomId, ':admin_id' => $adminId]);
 
@@ -159,6 +199,7 @@ if (!function_exists('clear_room_type_tenant_rent_snapshots')) {
               AND LOWER(COALESCE(status, 'active')) = 'active'
               AND exit_date IS NULL
               AND monthly_rent IS NOT NULL
+              AND COALESCE(rent_is_override, 0) = 0
               AND room_id IN (
                   SELECT r.id
                   FROM rooms r

@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/../core/audit.php';
+require_once __DIR__ . '/NotificationService.php';
 
 /**
  * Maintenance requests, tenant submission through landlord resolution.
@@ -354,6 +355,12 @@ final class MaintenanceService
             throw new RuntimeException('Keep the note under 500 characters.');
         }
 
+        $newStatus = in_array((string)$request['status'], ['submitted', 'under_review'], true)
+            ? 'assigned'
+            : (string)$request['status'];
+
+        $updateId = 0;
+
         $this->pdo->beginTransaction();
         try {
             $stmt = $this->pdo->prepare("
@@ -365,17 +372,15 @@ final class MaintenanceService
             ");
             $stmt->execute([':staff_id' => $staffId, ':id' => $requestId, ':admin_id' => $adminId]);
 
-            $newStatus = in_array((string)$request['status'], ['submitted', 'under_review'], true)
-                ? 'assigned'
-                : (string)$request['status'];
+            $assignmentMessage = 'Assigned to ' . $staff['full_name'] . ($message !== '' ? '. ' . $message : '.');
 
-            $this->logUpdate(
+            $updateId = $this->logUpdate(
                 $requestId,
                 'admin',
                 $actorId,
                 (string)$request['status'],
                 $newStatus,
-                'Assigned to ' . $staff['full_name'] . ($message !== '' ? '. ' . $message : '.')
+                $assignmentMessage
             );
 
             $this->pdo->commit();
@@ -385,6 +390,16 @@ final class MaintenanceService
             }
             throw $e;
         }
+
+        $this->notifyTenant(
+            (int)$request['tenant_id'],
+            $adminId,
+            $requestId,
+            $updateId,
+            'assigned',
+            $message,
+            (string)$request['category']
+        );
 
         $this->audit($actorId, 'admin', 'MAINTENANCE_ASSIGNED', "Request #{$requestId} assigned to {$staff['full_name']}.", $requestId, $adminId);
     }
@@ -447,13 +462,15 @@ final class MaintenanceService
             );
             $stmt->execute($params);
 
-            $this->logUpdate(
+            $timelineMessage = $message !== '' ? $message : 'Status changed to ' . str_replace('_', ' ', $status) . '.';
+
+            $updateId = $this->logUpdate(
                 $requestId,
                 'admin',
                 $actorId,
                 $current,
                 $status,
-                $message !== '' ? $message : 'Status changed to ' . str_replace('_', ' ', $status) . '.'
+                $timelineMessage
             );
 
             $this->pdo->commit();
@@ -463,6 +480,16 @@ final class MaintenanceService
             }
             throw $e;
         }
+
+        $this->notifyTenant(
+            (int)$request['tenant_id'],
+            $adminId,
+            $requestId,
+            $updateId ?? 0,
+            $status,
+            $message,
+            (string)$request['category']
+        );
 
         $this->audit(
             $actorId,
@@ -560,7 +587,8 @@ final class MaintenanceService
         return ['path' => $path, 'name' => $storedName];
     }
 
-    private function logUpdate(int $requestId, string $actorType, int $actorId, ?string $oldStatus, string $newStatus, string $message): void
+    /** @return int id of the timeline row, used as a notification dedupe key */
+    private function logUpdate(int $requestId, string $actorType, int $actorId, ?string $oldStatus, string $newStatus, string $message): int
     {
         $stmt = $this->pdo->prepare("
             INSERT INTO maintenance_request_updates (request_id, actor_type, actor_id, old_status, new_status, message)
@@ -574,6 +602,48 @@ final class MaintenanceService
             ':new_status' => $newStatus,
             ':message' => $message,
         ]);
+
+        return (int)$this->pdo->lastInsertId();
+    }
+
+    /**
+     * Tenant-facing notification. Deduplicated per timeline row, so a retried
+     * request cannot notify the tenant twice about the same transition.
+     */
+    private function notifyTenant(int $tenantId, int $adminId, int $requestId, int $updateId, string $status, string $message, string $category): void
+    {
+        if ($tenantId <= 0 || $adminId <= 0 || $updateId <= 0) {
+            return;
+        }
+
+        $statusLabel = ucfirst(str_replace('_', ' ', $status));
+        $title = match ($status) {
+            'assigned' => 'Someone was assigned to your repair request',
+            'completed' => 'Your repair request was completed',
+            'rejected' => 'Your repair request was closed',
+            'in_progress' => 'Work started on your repair request',
+            default => 'Your repair request was updated',
+        };
+
+        $body = $category . ' — ' . $statusLabel . '.';
+        if ($message !== '') {
+            $body .= ' ' . $message;
+        }
+
+        try {
+            (new NotificationService($this->pdo))->notifyTenant(
+                $tenantId,
+                $adminId,
+                'maintenance',
+                $title,
+                $body,
+                'maint:' . $requestId . ':update:' . $updateId,
+                'maintenance_request',
+                $requestId
+            );
+        } catch (Throwable $ignored) {
+            // A notification must never roll back the maintenance change.
+        }
     }
 
     private function audit(int $actorId, string $actorType, string $action, string $details, int $requestId, int $adminId): void

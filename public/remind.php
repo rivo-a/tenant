@@ -309,82 +309,39 @@ $paymentMonth = date('Y-m');
    9. CALCULATE CURRENT MONTH DUE
    ========================================================= */
 
-$scheduleStmt = $db->prepare(
-    "
-    SELECT
-        COALESCE(SUM(amount_due), 0)
+/*
+ * Same engine as the reports centre and the dashboard. A reminder must quote
+ * the figure the landlord sees, not a current-month figure of its own.
+ */
+require_once __DIR__ . '/../services/ArrearsService.php';
 
-    FROM rent_schedule
+$arrearsPosition =
+    (new ArrearsService($db))
+        ->getTenantArrears($tenantId);
 
-    WHERE
-        tenant_id = :tenant_id
-        AND month = :payment_month
-    "
-);
+$amountDue =
+    (float)($arrearsPosition['expected'] ?? $effectiveRent);
 
-$scheduleStmt->execute([
-    ':tenant_id' => $tenantId,
-    ':payment_month' => $paymentMonth,
-]);
+$amountPaid =
+    (float)($arrearsPosition['verified_paid'] ?? 0);
 
-$scheduledDue = (float)(
-    $scheduleStmt->fetchColumn()
-);
-
-$amountDue = $scheduledDue > 0
-    ? $scheduledDue
-    : $effectiveRent;
+$outstandingBalance =
+    (float)($arrearsPosition['balance'] ?? 0);
 
 /* =========================================================
-   10. CURRENT MONTH PAYMENTS
+   10. PAYMENT STATUS
    ========================================================= */
-
-$paymentStmt = $db->prepare(
-    "
-    SELECT
-        COALESCE(SUM(amount), 0)
-
-    FROM payments
-
-    WHERE
-        tenant_id = :tenant_id
-        AND payment_month = :payment_month
-        AND admin_id = :admin_id
-    "
-);
-
-$paymentStmt->execute([
-    ':tenant_id' => $tenantId,
-    ':payment_month' => $paymentMonth,
-    ':admin_id' => $adminId,
-]);
-
-$amountPaid = (float)(
-    $paymentStmt->fetchColumn()
-);
-
-$outstandingBalance = max(
-    0,
-    $amountDue - $amountPaid
-);
-
-/* =========================================================
-   11. PAYMENT STATUS
-   ========================================================= */
-
-$todayDay = (int)date('j');
 
 if ($outstandingBalance <= 0) {
     $paymentStatus = 'Paid';
-} elseif ($todayDay > 5) {
+} elseif (!empty($arrearsPosition['is_overdue'])) {
     $paymentStatus = 'Overdue';
 } else {
     $paymentStatus = 'Due';
 }
 
-$daysOverdue = calculateDaysOverdue(
-    $tenant['rent_due_date'] ?? null
-);
+$daysOverdue =
+    (int)($arrearsPosition['days_overdue'] ?? 0);
 
 /* =========================================================
    12. DEFAULT MESSAGE
@@ -560,73 +517,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if ($errorMessage === '') {
 
-        $verifyScheduleStmt = $db->prepare(
-            "
-            SELECT
-                COALESCE(SUM(amount_due), 0)
+        $recheckPosition =
+            (new ArrearsService($db))
+                ->getTenantArrears($tenantId);
 
-            FROM rent_schedule
+        if ($recheckPosition === null) {
 
-            WHERE
-                tenant_id = :tenant_id
-                AND month = :payment_month
-            "
-        );
-
-        $verifyScheduleStmt->execute([
-            ':tenant_id' => $tenantId,
-            ':payment_month' => $paymentMonth,
-        ]);
-
-        $verifiedScheduledDue =
-            (float)$verifyScheduleStmt->fetchColumn();
-
-        if ($verifiedScheduledDue <= 0) {
-            $verifiedScheduledDue =
-                $effectiveRent;
-        }
-
-        $verifyPaymentStmt = $db->prepare(
-            "
-            SELECT
-                COALESCE(SUM(amount), 0)
-
-            FROM payments
-
-            WHERE
-                tenant_id = :tenant_id
-                AND payment_month = :payment_month
-                AND admin_id = :admin_id
-            "
-        );
-
-        $verifyPaymentStmt->execute([
-            ':tenant_id' => $tenantId,
-            ':payment_month' => $paymentMonth,
-            ':admin_id' => $adminId,
-        ]);
-
-        $verifiedAmountPaid =
-            (float)$verifyPaymentStmt->fetchColumn();
-
-        $verifiedBalance = max(
-            0,
-            $verifiedScheduledDue -
-            $verifiedAmountPaid
-        );
-
-        $amountDue =
-            $verifiedScheduledDue;
-
-        $amountPaid =
-            $verifiedAmountPaid;
-
-        $outstandingBalance =
-            $verifiedBalance;
-
-        if ($verifiedBalance <= 0) {
             $errorMessage =
-                'This tenant has already paid the current month\'s rent. The SMS was not sent.';
+                'This tenant no longer has an active tenancy. The SMS was not sent.';
+
+        } else {
+
+            $amountDue =
+                (float)$recheckPosition['expected'];
+
+            $amountPaid =
+                (float)$recheckPosition['verified_paid'];
+
+            $outstandingBalance =
+                (float)$recheckPosition['balance'];
+
+            if ($outstandingBalance <= 0) {
+
+                $errorMessage =
+                    'This tenant has no outstanding balance. The SMS was not sent.';
+            }
         }
     }
 

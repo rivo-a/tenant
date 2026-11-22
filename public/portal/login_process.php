@@ -30,16 +30,41 @@ if ($phone === '' || $password === '') {
 try {
     $pdo = getDB();
 
-    // Fetch tenant by phone
+    require_once __DIR__ . '/../../core/rent.php';
+
+    /*
+     * Match on the normalised number so "+256 772 123456", "0772123456" and
+     * "256772123456" reach the same account. When that number belongs to two
+     * businesses the sign-in is refused instead of guessing which tenancy is
+     * meant.
+     */
     $stmt = $pdo->prepare("
         SELECT id, admin_id, full_name, password_hash, account_status,
                must_change_password, login_attempts, locked_until
         FROM tenants
-        WHERE phone = :phone
-        LIMIT 1
+        WHERE phone_normalized = :phone
+           OR (phone_normalized IS NULL AND phone = :raw_phone)
+        ORDER BY id
     ");
-    $stmt->execute(['phone' => $phone]);
-    $tenant = $stmt->fetch(PDO::FETCH_ASSOC);
+    $stmt->execute([':phone' => phone_normalize($phone), ':raw_phone' => $phone]);
+    $phoneMatches = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    if (count($phoneMatches) > 1) {
+        if (function_exists('audit_log_event')) {
+            try {
+                audit_log_event($pdo, null, 'LOGIN_AMBIGUOUS_PHONE', 'Phone matches more than one tenancy.', [
+                    'actor_type' => 'tenant',
+                ]);
+            } catch (Throwable $ignored) {
+                // Sign-in must not depend on the audit write.
+            }
+        }
+
+        header('Location: /tenant-system/public/portal/login.php?error=invalid');
+        exit;
+    }
+
+    $tenant = $phoneMatches[0] ?? null;
 
     // --- AUDIT HELPER (shared writer, fail-safe for sign-in) ---
     $logAudit = function (string $action, ?int $actorId = null, ?string $details = null) use ($pdo, $tenant): void {

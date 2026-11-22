@@ -64,6 +64,8 @@ final class ArrearsService
                 t.rent_due_date,
                 r.id AS room_id,
                 r.room_number,
+                r.property_id,
+                pr.name AS property_name,
                 rt.name AS room_type,
                 {$rentExpression} AS rent,
                 COALESCE(SUM(CASE WHEN {$verifiedExpression} THEN p.amount ELSE 0 END), 0) AS verified_paid,
@@ -71,6 +73,7 @@ final class ArrearsService
                 COUNT(p.id) AS payment_count
             FROM tenants t
             LEFT JOIN rooms r ON r.id = t.room_id
+            LEFT JOIN properties pr ON pr.id = r.property_id
             LEFT JOIN room_types rt ON rt.id = r.room_type_id
             LEFT JOIN payments p
                 ON p.tenant_id = t.id
@@ -88,6 +91,8 @@ final class ArrearsService
                 t.rent_due_date,
                 r.id,
                 r.room_number,
+                r.property_id,
+                pr.name,
                 t.monthly_rent,
                 r.monthly_rent,
                 rt.name,
@@ -110,13 +115,27 @@ final class ArrearsService
         $stmt->execute($params);
         $records = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
+        /*
+         * Billed rent per month comes from rent_charges, so a rent change now
+         * cannot rewrite what was charged in the past. Months with no recorded
+         * charge (the current and future ones) fall back to the rent in force.
+         */
+        $charges = $this->chargesByTenant($adminId);
+
         $rows = [];
         foreach ($records as $record) {
             $rent = max(0.0, (float)($record['rent'] ?? 0));
             $verifiedPaid = max(0.0, (float)($record['verified_paid'] ?? 0));
             $pendingPaid = max(0.0, (float)($record['pending_paid'] ?? 0));
             $monthsDue = rent_months_due($record['move_in_date'] ?? null, $asOf);
-            $expected = round($monthsDue * $rent, 2);
+            $expected = round($this->billedTotal(
+                (int)$record['tenant_id'],
+                $record['move_in_date'] ?? null,
+                $asOf,
+                $rent,
+                $monthsDue,
+                $charges
+            ), 2);
 
             /*
              * Pending money reduces what the tenant owes (they handed it over)
@@ -167,6 +186,8 @@ final class ArrearsService
                 'phone' => (string)($record['phone'] ?? ''),
                 'room_id' => (int)($record['room_id'] ?? 0),
                 'room_number' => (string)($record['room_number'] ?? ''),
+                'property_id' => (int)($record['property_id'] ?? 0),
+                'property_name' => (string)($record['property_name'] ?? ''),
                 'room_type' => (string)($record['room_type'] ?? ''),
                 'move_in_date' => $record['move_in_date'] ?? null,
                 'rent_due_date' => $record['rent_due_date'] ?? null,
@@ -212,6 +233,76 @@ final class ArrearsService
             'rows' => $rows,
             'totals' => $totals,
         ];
+    }
+
+    /**
+     * Recorded charges for every tenant of a business, keyed tenant → month.
+     *
+     * @return array<int, array<string, float>>
+     */
+    private function chargesByTenant(int $adminId): array
+    {
+        $out = [];
+
+        try {
+            $stmt = $this->pdo->prepare('SELECT tenant_id, month, amount FROM rent_charges WHERE admin_id = :admin_id');
+            $stmt->execute([':admin_id' => $adminId]);
+
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $charge) {
+                $out[(int)$charge['tenant_id']][(string)$charge['month']] = (float)$charge['amount'];
+            }
+        } catch (Throwable $ignored) {
+            // Table absent on a fresh install: fall back to rent × months.
+        }
+
+        return $out;
+    }
+
+    /**
+     * Sum of what was charged for each billing month between move-in and the
+     * as-of month. A month without a recorded charge uses the current rent.
+     *
+     * @param array<int, array<string, float>> $charges
+     */
+    private function billedTotal(
+        int $tenantId,
+        ?string $moveIn,
+        DateTimeImmutable $asOf,
+        float $rent,
+        int $monthsDue,
+        array $charges
+    ): float {
+        if ($monthsDue <= 0) {
+            return 0.0;
+        }
+
+        $recorded = $charges[$tenantId] ?? [];
+
+        if (!$recorded) {
+            return $monthsDue * $rent;
+        }
+
+        $timezone = new DateTimeZone('Africa/Kampala');
+
+        try {
+            $start = $moveIn
+                ? room_rent_month((new DateTimeImmutable($moveIn))->setTimezone($timezone))
+                : room_rent_month($asOf);
+        } catch (Throwable $ignored) {
+            return $monthsDue * $rent;
+        }
+
+        $end = room_rent_month($asOf->setTimezone($timezone));
+        $total = 0.0;
+        $guard = 0;
+
+        for ($cursor = $start; $cursor <= $end && $guard < 600; $cursor = $cursor->modify('+1 month')) {
+            $key = $cursor->format('Y-m');
+            $total += array_key_exists($key, $recorded) ? $recorded[$key] : $rent;
+            $guard++;
+        }
+
+        return $total;
     }
 
     /**

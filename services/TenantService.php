@@ -1,6 +1,8 @@
 <?php
 declare(strict_types=1);
 
+require_once __DIR__ . '/../core/rent.php';
+
 class TenantService
 {
     private PDO $pdo;
@@ -189,22 +191,25 @@ class TenantService
                     room_id,
                     full_name,
                     phone,
+                    phone_normalized,
                     email,
                     move_in_date,
                     rent_due_date,
                     monthly_rent,
+                    rent_is_override,
                     status,
                     password_hash,
                     account_status,
                     must_change_password,
                     created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, 'password_reset_required', 1, CURRENT_TIMESTAMP)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 'active', ?, 'password_reset_required', 1, CURRENT_TIMESTAMP)
             ");
             $stmt->execute([
                 $adminId,
                 $roomId,
                 $fullName,
                 $phone,
+                phone_normalize($phone),
                 $email,
                 $moveInDate,
                 $moveInDate,
@@ -317,32 +322,41 @@ class TenantService
             }
         }
 
+        /*
+         * A saved rent figure is a deliberate override, so room and room-type
+         * rent changes leave it alone. A blank field clears the override and the
+         * tenancy follows the room again.
+         */
         if ($hasRentField) {
             $stmt = $this->pdo->prepare("
                 UPDATE tenants
-                SET full_name = ?, phone = ?, email = ?, move_in_date = ?, monthly_rent = ?,
+                SET full_name = ?, phone = ?, phone_normalized = ?, email = ?, move_in_date = ?,
+                    monthly_rent = ?, rent_is_override = ?,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ? AND admin_id = ?
             ");
             $updated = $stmt->execute([
                 $fullName,
                 $phone,
+                phone_normalize($phone),
                 $email,
                 $moveInDate,
                 $monthlyRent,
+                $monthlyRent !== null ? 1 : 0,
                 $tenantId,
                 $adminId,
             ]);
         } else {
             $stmt = $this->pdo->prepare("
                 UPDATE tenants
-                SET full_name = ?, phone = ?, email = ?, move_in_date = ?,
+                SET full_name = ?, phone = ?, phone_normalized = ?, email = ?, move_in_date = ?,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ? AND admin_id = ?
             ");
             $updated = $stmt->execute([
                 $fullName,
                 $phone,
+                phone_normalize($phone),
                 $email,
                 $moveInDate,
                 $tenantId,

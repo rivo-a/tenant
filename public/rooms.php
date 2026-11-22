@@ -74,6 +74,11 @@ function chip(string $label, string $tone): string
    POST HANDLERS (PRG)
 ============================= */
 
+/* Every state change carries a token. Missing or stale tokens are refused. */
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
+    verify_csrf((string)($_POST['csrf'] ?? ''));
+}
+
 /* ---- Add Custom Room Type ---- */
 if (isset($_POST['add_room_type'])) {
     $name = trim((string)($_POST['custom_name'] ?? ''));

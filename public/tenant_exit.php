@@ -1,247 +1,270 @@
 <?php
+declare(strict_types=1);
+
 require_once __DIR__ . '/../core/bootstrap.php';
+require_once __DIR__ . '/../services/ArrearsService.php';
 
 require_login();
 require_capability('tenants.manage');
 
 $pdo = getDB();
-
-$tenantId = isset($_GET['id']) ? (int) $_GET['id'] : 0;
-$adminId = current_business_id();
+$businessId = current_business_id();
+$actorId = (int)($_SESSION['admin_id'] ?? 0);
+$tenantId = isset($_GET['id']) ? (int)$_GET['id'] : 0;
 
 if ($tenantId <= 0) {
-    die("Invalid tenant ID.");
+    deny_access('tenants.manage', 'Missing tenant id on checkout.');
 }
 
-function monthsAndDaysBetween(DateTime $start, DateTime $end): array
-{
-    $invert = $start > $end;
-    if ($invert) {
-        $tmp = $start;
-        $start = $end;
-        $end = $tmp;
-    }
-    $diff = $start->diff($end);
-    return [(($diff->y * 12) + $diff->m), $diff->d];
-}
-
-/**
- * STEP 1: Load tenant, room, and room type data
- */
-$stmt = $pdo->prepare("
-    SELECT 
-        t.id, t.full_name, t.move_in_date, t.status, 
-        t.monthly_rent AS tenant_rent,
-        r.id AS room_id, r.room_number, r.monthly_rent AS room_rent,
-        rt.default_monthly_rent AS type_rent
+$stmt = $pdo->prepare('
+    SELECT t.id, t.full_name, t.move_in_date, t.status, t.exit_date,
+           r.id AS room_id, r.room_number
     FROM tenants t
-    JOIN rooms r ON t.room_id = r.id
-    LEFT JOIN room_types rt ON r.room_type_id = rt.id
+    LEFT JOIN rooms r ON r.id = t.room_id
     WHERE t.id = :id AND t.admin_id = :admin_id
     LIMIT 1
-");
-
-$stmt->execute(['id' => $tenantId, 'admin_id' => $adminId]);
+');
+$stmt->execute([':id' => $tenantId, ':admin_id' => $businessId]);
 $tenant = $stmt->fetch(PDO::FETCH_ASSOC);
 
 if (!$tenant) {
-    die("Tenant not found or you do not have permission.");
+    http_response_code(404);
+    exit('Tenant not found or not part of this business.');
 }
 
-if ($tenant['status'] !== 'active') {
-    die("This tenant is already exited.");
+if (strtolower((string)$tenant['status']) !== 'active' || !empty($tenant['exit_date'])) {
+    http_response_code(409);
+    exit('This tenancy has already been closed.');
 }
 
-// Determine the effective rent (Tenant -> Room -> Room Type)
-$effectiveRent = $tenant['tenant_rent'] ?? $tenant['room_rent'] ?? $tenant['type_rent'];
-$rentMissing = (empty($effectiveRent) || (float)$effectiveRent <= 0);
+$error = '';
+$exitDateInput = $_POST['exit_date'] ?? date('Y-m-d');
+$exitReasonInput = trim((string)($_POST['exit_reason'] ?? ''));
+$allowUnclearedInput = isset($_POST['allow_uncleared']);
 
 /**
- * STEP 2: Handle Form Submission
+ * Financial position at the chosen exit date, from the same engine the
+ * reports, dashboard and portal use. Nothing is recalculated here.
+ *
+ * @return array<string, mixed>|null
  */
-$error = '';
-$success = false;
+$positionAt = static function (string $date) use ($tenantId): ?array {
+    try {
+        return (new ArrearsService(getDB()))->getTenantArrears($tenantId, new DateTimeImmutable($date));
+    } catch (Throwable $ignored) {
+        return null;
+    }
+};
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $exitDateInput = $_POST['exit_date'] ?? date('Y-m-d');
-    $exitReason = trim($_POST['exit_reason'] ?? '');
-    $allowUncleared = isset($_POST['allow_uncleared']);
-    
-    // If rent was missing in DB, use the manually entered amount
-    $finalMonthlyRent = $rentMissing ? (float)($_POST['manual_rent'] ?? 0) : (float)$effectiveRent;
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
+    try {
+        verify_csrf((string)($_POST['csrf'] ?? ''));
 
-    if ($exitReason === '') {
-        $error = "Exit reason is required.";
-    } elseif ($rentMissing && $finalMonthlyRent <= 0) {
-        $error = "Please enter a valid monthly rent to calculate the balance.";
-    } else {
-        try {
-            $pdo->beginTransaction();
-
-            // 1. Exit tenant (Removed exit_reason as column doesn't exist)
-            $stmt = $pdo->prepare("
-                UPDATE tenants
-                SET status = 'exited', exit_date = :exit_date
-                WHERE id = :id AND admin_id = :admin_id
-            ");
-            $stmt->execute([
-                'exit_date' => $exitDateInput,
-                'id'        => $tenantId,
-                'admin_id'  => $adminId
-            ]);
-
-            // 2. Free the room (Schema uses 'free', not 'vacant')
-            $stmt = $pdo->prepare("
-                UPDATE rooms
-                SET status = 'free'
-                WHERE id = :room_id AND admin_id = :admin_id
-            ");
-            $stmt->execute(['room_id' => $tenant['room_id'], 'admin_id' => $adminId]);
-
-            // 3. Log to audit_logs
-            try {
-                $stmt = $pdo->prepare("
-                    INSERT INTO audit_logs (admin_id, action, description)
-                    VALUES (:admin_id, 'TENANT_EXIT', :desc)
-                ");
-                $stmt->execute([
-                    'admin_id' => $adminId,
-                    'desc'     => "Tenant '{$tenant['full_name']}' exited. Reason: {$exitReason}. Monthly Rent Used: {$finalMonthlyRent}"
-                ]);
-            } catch (Throwable $e) { /* Ignore audit errors */ }
-
-            $pdo->commit();
-            header("Location: tenants.php?exit=success");
-            exit;
-
-        } catch (Throwable $e) {
-            $pdo->rollBack();
-            $error = "Exit failed: " . $e->getMessage();
+        $exitDate = DateTimeImmutable::createFromFormat('!Y-m-d', trim((string)$exitDateInput));
+        if (!$exitDate || $exitDate->format('Y-m-d') !== trim((string)$exitDateInput)) {
+            throw new RuntimeException('Choose a valid exit date.');
         }
+
+        $today = new DateTimeImmutable('today');
+        if ($exitDate > $today) {
+            throw new RuntimeException('The exit date cannot be in the future.');
+        }
+
+        $moveIn = trim((string)($tenant['move_in_date'] ?? ''));
+        if ($moveIn !== '') {
+            $moveInDate = DateTimeImmutable::createFromFormat('!Y-m-d', $moveIn);
+            if ($moveInDate && $exitDate < $moveInDate) {
+                throw new RuntimeException('The exit date cannot be before the move-in date.');
+            }
+        }
+
+        if ($exitReasonInput === '') {
+            throw new RuntimeException('Give a reason for the exit.');
+        }
+
+        $position = $positionAt($exitDate->format('Y-m-d'));
+        if ($position === null) {
+            throw new RuntimeException('The balance could not be calculated for that date.');
+        }
+
+        $balance = (float)$position['balance'];
+
+        if ($balance > 0.00001 && !$allowUnclearedInput) {
+            throw new RuntimeException(
+                'This tenant still owes ' . number_format($balance, 0) . '. Collect it, or tick the confirmation to release the room with arrears.'
+            );
+        }
+
+        $pdo->beginTransaction();
+
+        $exit = $pdo->prepare('
+            INSERT INTO tenant_exits
+                (tenant_id, admin_id, exit_date, rent_at_exit, billed_total, paid_total, final_balance, reason, allowed_uncleared, recorded_by)
+            VALUES
+                (:tenant_id, :admin_id, :exit_date, :rent, :billed, :paid, :balance, :reason, :allowed, :recorded_by)
+        ');
+        $exit->execute([
+            ':tenant_id' => $tenantId,
+            ':admin_id' => $businessId,
+            ':exit_date' => $exitDate->format('Y-m-d'),
+            ':rent' => (float)$position['rent'],
+            ':billed' => (float)$position['expected'],
+            ':paid' => (float)$position['verified_paid'] + (float)$position['pending_paid'],
+            ':balance' => $balance,
+            ':reason' => $exitReasonInput,
+            ':allowed' => $allowUnclearedInput ? 1 : 0,
+            ':recorded_by' => $actorId,
+        ]);
+
+        $close = $pdo->prepare("
+            UPDATE tenants
+            SET status = 'exited',
+                exit_date = :exit_date,
+                account_status = 'exited',
+                session_token = NULL,
+                must_change_password = 1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = :id AND admin_id = :admin_id
+        ");
+        $close->execute([
+            ':exit_date' => $exitDate->format('Y-m-d'),
+            ':id' => $tenantId,
+            ':admin_id' => $businessId,
+        ]);
+
+        if (!empty($tenant['room_id'])) {
+            $free = $pdo->prepare("UPDATE rooms SET status = 'free' WHERE id = :room_id AND admin_id = :admin_id");
+            $free->execute([':room_id' => (int)$tenant['room_id'], ':admin_id' => $businessId]);
+        }
+
+        // Any issued portal link and any live portal session die with the tenancy.
+        $revoke = $pdo->prepare('UPDATE tenant_access_tokens SET revoked_at = CURRENT_TIMESTAMP WHERE tenant_id = :id AND revoked_at IS NULL');
+        $revoke->execute([':id' => $tenantId]);
+
+        $pdo->commit();
+
+        logAudit(
+            $actorId,
+            'TENANT_EXITED',
+            sprintf(
+                "%s checked out on %s. Balance UGX %s%s. Reason: %s",
+                $tenant['full_name'],
+                $exitDate->format('Y-m-d'),
+                number_format($balance, 0),
+                $balance > 0.00001 ? ' (arrears permitted)' : '',
+                $exitReasonInput
+            ),
+            [
+                'target_type' => 'tenant',
+                'target_id' => $tenantId,
+                'owner_admin_id' => $businessId,
+            ]
+        );
+
+        header('Location: tenants.php?exit=success');
+        exit;
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        $error = $e->getMessage();
     }
 }
 
-/**
- * STEP 3: Calculate Financials (if rent is known)
- */
-$monthlyRent = $rentMissing ? 0 : (float)$effectiveRent;
-$totalRentCharged = 0;
-$totalPayments = 0;
-$totalArrears = 0;
-$durationStr = '0 days';
+$previewDate = DateTimeImmutable::createFromFormat('!Y-m-d', trim((string)$exitDateInput)) ?: new DateTimeImmutable('today');
+$preview = $positionAt($previewDate->format('Y-m-d'));
+$previewBalance = (float)($preview['balance'] ?? 0);
 
-if ($monthlyRent > 0) {
-    $moveInDate = new DateTime($tenant['move_in_date']);
-    $exitDate = new DateTime();
-    list($monthsOccupied, $daysOccupied) = monthsAndDaysBetween($moveInDate, $exitDate);
-
-    $dailyRate = $monthlyRent / 30;
-    $totalRentCharged = ($monthsOccupied * $monthlyRent) + ($daysOccupied * $dailyRate);
-    $durationStr = ($monthsOccupied > 0 ? $monthsOccupied . ' month' . ($monthsOccupied > 1 ? 's' : '') . ' ' : '') . $daysOccupied . ' day' . ($daysOccupied !== 1 ? 's' : '');
-
-    $stmt = $pdo->prepare("SELECT COALESCE(SUM(amount), 0) FROM payments WHERE tenant_id = :tenant_id AND admin_id = :admin_id");
-    $stmt->execute(['tenant_id' => $tenantId, 'admin_id' => $adminId]);
-    $totalPayments = (float)$stmt->fetchColumn();
-
-    $totalArrears = max(0, $totalRentCharged - $totalPayments);
-}
+$money = static fn($value): string => 'UGX ' . number_format((float)$value, 0);
 ?>
-
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Exit Tenant</title>
-    <style>
-        body { font-family: Arial, sans-serif; background: #f4f4f9; padding: 20px; }
-        .box { max-width: 700px; margin: 40px auto; padding: 30px; border: 1px solid #ddd; background: #fff; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        .error { color: #d9534f; background: #f2dede; padding: 12px; border-radius: 4px; margin-bottom: 20px; border: 1px solid #ebccd1; }
-        .row { display: flex; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid #eee; }
-        .label { font-weight: 600; color: #555; }
-        .value { color: #333; }
-        .total-row { font-size: 1.3em; font-weight: bold; border-top: 3px solid #333; border-bottom: none; margin-top: 10px; padding-top: 15px; }
-        .positive { color: #d9534f; }
-        .negative { color: #5cb85c; }
-        .warning-box { background: #fff3cd; color: #856404; padding: 15px; border-radius: 4px; border: 1px solid #ffeeba; margin-bottom: 20px; }
-        input[type="date"], input[type="text"], input[type="number"] { width: 100%; padding: 10px; margin-top: 5px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; }
-        .btn { padding: 12px 24px; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; margin-right: 10px; }
-        .btn-danger { background: #d9534f; color: white; }
-        .btn-secondary { background: #ddd; color: #333; text-decoration: none; display: inline-block; padding: 12px 24px; border-radius: 4px; }
-        .checkbox-label { display: flex; align-items: center; gap: 8px; margin: 15px 0; color: #d9534f; font-weight: 600; }
-    </style>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Exit tenant · Urbahan</title>
+    <link rel="stylesheet" href="assets/css/tailwind.css">
 </head>
-<body>
+<body class="min-h-screen bg-slate-50 text-slate-900">
+<main class="mx-auto max-w-2xl px-4 py-8">
 
-<div class="box">
-    <h2 style="margin-top: 0;">Exit Tenant</h2>
+    <header class="mb-4">
+        <h1 class="text-2xl font-bold tracking-tight">Exit tenant</h1>
+        <p class="mt-1 text-sm text-slate-600">
+            <?= e($tenant['full_name']) ?><?= $tenant['room_number'] ? ' · Room ' . e($tenant['room_number']) : '' ?>
+            · moved in <?= e($tenant['move_in_date'] ? date('d M Y', strtotime((string)$tenant['move_in_date'])) : '—') ?>
+        </p>
+    </header>
 
-    <?php if ($error): ?>
-        <div class="error"><?= htmlspecialchars($error) ?></div>
+    <?php if ($error !== ''): ?>
+        <div class="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-800" role="alert"><?= e($error) ?></div>
     <?php endif; ?>
 
-    <div class="row">
-        <span class="label">Name:</span>
-        <span class="value"><?= htmlspecialchars($tenant['full_name']) ?></span>
-    </div>
-    <div class="row">
-        <span class="label">Room:</span>
-        <span class="value"><?= htmlspecialchars($tenant['room_number']) ?></span>
-    </div>
+    <section class="mb-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+        <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-500">Position at <?= e($previewDate->format('d M Y')) ?></h2>
+        <dl class="mt-3 grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
+            <div>
+                <dt class="text-xs text-slate-500">Monthly rent</dt>
+                <dd class="mt-0.5 font-medium tabular-nums"><?= e($money($preview['rent'] ?? 0)) ?></dd>
+            </div>
+            <div>
+                <dt class="text-xs text-slate-500">Billed to date</dt>
+                <dd class="mt-0.5 font-medium tabular-nums"><?= e($money($preview['expected'] ?? 0)) ?></dd>
+            </div>
+            <div>
+                <dt class="text-xs text-slate-500">Confirmed paid</dt>
+                <dd class="mt-0.5 font-medium tabular-nums"><?= e($money($preview['verified_paid'] ?? 0)) ?></dd>
+            </div>
+            <div>
+                <dt class="text-xs text-slate-500">Pending</dt>
+                <dd class="mt-0.5 font-medium tabular-nums"><?= e($money($preview['pending_paid'] ?? 0)) ?></dd>
+            </div>
+            <div class="col-span-2 border-t border-slate-100 pt-3">
+                <dt class="text-xs text-slate-500">Outstanding balance</dt>
+                <dd class="mt-0.5 text-xl font-bold tabular-nums <?= $previewBalance > 0 ? 'text-red-700' : 'text-emerald-700' ?>"><?= e($money($previewBalance)) ?></dd>
+            </div>
+        </dl>
+        <p class="mt-3 text-xs text-slate-500">
+            The balance is calculated by the same engine as reports and the tenant portal, at the exit date you choose.
+        </p>
+    </section>
 
-    <?php if ($rentMissing): ?>
-        <div class="warning-box">
-            ⚠️ <strong>Missing Rent Data:</strong> The monthly rent is not recorded in the database for this tenant or room. 
-            Please enter the agreed monthly rent below so we can calculate the final balance.
-        </div>
-        <div class="row" style="flex-direction: column;">
-            <label class="label" style="margin-bottom: 5px;">Agreed Monthly Rent (UGX):</label>
-            <input type="number" name="manual_rent" value="<?= htmlspecialchars($_POST['manual_rent'] ?? '') ?>" placeholder="e.g. 700000" required style="margin-top: 0;">
-        </div>
-    <?php else: ?>
-        <div class="row">
-            <span class="label">Duration Occupied:</span>
-            <span class="value"><?= $durationStr ?></span>
-        </div>
-        <div class="row">
-            <span class="label">Monthly Rent:</span>
-            <span class="value">UGX <?= number_format($monthlyRent, 0) ?></span>
-        </div>
-        <div class="row">
-            <span class="label">Total Rent Charged:</span>
-            <span class="value">UGX <?= number_format($totalRentCharged, 2) ?></span>
-        </div>
-        <div class="row">
-            <span class="label">Total Payments Made:</span>
-            <span class="value negative">UGX <?= number_format($totalPayments, 2) ?></span>
-        </div>
-        <div class="row total-row">
-            <span>Total Arrears / Outstanding Balance:</span>
-            <span class="<?= $totalArrears > 0 ? 'positive' : 'negative' ?>">
-                UGX <?= number_format($totalArrears, 2) ?>
-            </span>
-        </div>
-    <?php endif; ?>
+    <form method="post" class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+        <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>">
 
-    <form method="post" style="margin-top: 30px;">
-        <label style="font-weight: 600;">Exit Date:</label>
-        <input type="date" name="exit_date" value="<?= date('Y-m-d') ?>" required>
+        <div class="grid gap-3 sm:grid-cols-2">
+            <label class="flex flex-col gap-1 text-xs font-semibold text-slate-600">
+                Exit date
+                <input type="date" name="exit_date" required max="<?= e(date('Y-m-d')) ?>"
+                       value="<?= e($previewDate->format('Y-m-d')) ?>"
+                       class="min-h-11 rounded-xl border border-slate-300 px-3 py-2 text-sm font-normal">
+            </label>
 
-        <label style="font-weight: 600; margin-top: 20px; display: block;">Exit Reason:</label>
-        <input type="text" name="exit_reason" placeholder="e.g., End of lease, Relocation, Non-payment" value="<?= htmlspecialchars($_POST['exit_reason'] ?? '') ?>" required>
+            <label class="flex flex-col gap-1 text-xs font-semibold text-slate-600">
+                Reason
+                <input type="text" name="exit_reason" required maxlength="160" placeholder="End of lease, relocation, non-payment…"
+                       value="<?= e($exitReasonInput) ?>"
+                       class="min-h-11 rounded-xl border border-slate-300 px-3 py-2 text-sm font-normal">
+            </label>
+        </div>
 
-        <?php if (!$rentMissing && $totalArrears > 0): ?>
-            <label class="checkbox-label">
-                <input type="checkbox" name="allow_uncleared">
-                Allow exit despite outstanding arrears of UGX <?= number_format($totalArrears, 2) ?>
+        <?php if ($previewBalance > 0): ?>
+            <label class="mt-4 flex items-start gap-2 rounded-xl bg-amber-50 px-3 py-3 text-sm text-amber-900">
+                <input type="checkbox" name="allow_uncleared" class="mt-0.5" <?= $allowUnclearedInput ? 'checked' : '' ?>>
+                <span>
+                    Release the room even though <?= e($money($previewBalance)) ?> is outstanding.
+                    The arrears stay on the tenant's record and remain reportable.
+                </span>
             </label>
         <?php endif; ?>
 
-        <div style="margin-top: 25px;">
-            <button type="submit" class="btn btn-danger">Confirm Exit</button>
-            <a href="tenants.php" class="btn btn-secondary">Cancel</a>
+        <div class="mt-4 flex flex-wrap gap-2">
+            <button type="submit" class="min-h-11 rounded-xl bg-red-700 px-4 py-2 text-sm font-semibold text-white hover:bg-red-800">
+                Confirm exit
+            </button>
+            <a href="tenants.php" class="min-h-11 rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">Cancel</a>
         </div>
     </form>
-</div>
-
+</main>
 </body>
 </html>

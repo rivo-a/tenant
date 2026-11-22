@@ -5,6 +5,7 @@ require_once __DIR__ . '/../../config/config.php';
 require_once __DIR__ . '/../../core/helpers.php';
 require_once __DIR__ . '/../../core/tenant_auth.php';
 require_once __DIR__ . '/../../services/ArrearsService.php';
+require_once __DIR__ . '/../../services/NotificationService.php';
 
 /*
  * Balance shown here comes from ArrearsService, the same engine the landlord's
@@ -67,6 +68,10 @@ $recentStmt = $pdo->prepare("
 ");
 $recentStmt->execute([':tenant_id' => $tenantId]);
 $recentPayments = $recentStmt->fetchAll(PDO::FETCH_ASSOC);
+
+$notifier = new NotificationService($pdo);
+$alerts = $notifier->feed($tenantId, 3);
+$unreadAlerts = $notifier->unreadCount($tenantId);
 
 function getStatusBadge(string $status): string
 {
@@ -177,6 +182,34 @@ function portalMoney(float $value): string
                                 </p>
                             </div>
                             <?= getStatusBadge((string)$payment['verification_status']) ?>
+                        </li>
+                    <?php endforeach; ?>
+                </ul>
+            <?php endif; ?>
+        </section>
+
+        <section class="mb-5 rounded-2xl border border-slate-200 bg-white shadow-sm" aria-labelledby="alerts-title">
+            <div class="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-5 py-3">
+                <h2 id="alerts-title" class="text-sm font-semibold uppercase tracking-wide text-slate-500">
+                    Alerts<?php if ($unreadAlerts > 0): ?> <span class="ml-1 rounded-full bg-sky-600 px-1.5 py-0.5 text-[11px] font-bold text-white"><?= $unreadAlerts ?></span><?php endif; ?>
+                </h2>
+                <a href="notifications.php" class="text-xs font-semibold text-slate-600 hover:text-slate-900">All alerts</a>
+            </div>
+
+            <?php if (!$alerts): ?>
+                <p class="px-5 py-6 text-center text-sm text-slate-600">No updates from your landlord yet.</p>
+            <?php else: ?>
+                <ul role="list" class="divide-y divide-slate-100">
+                    <?php foreach ($alerts as $alert): ?>
+                        <li class="px-5 py-3">
+                            <p class="text-sm font-medium <?= empty($alert['read_at']) ? 'text-slate-900' : 'text-slate-700' ?>">
+                                <?= empty($alert['read_at']) ? '<span class="mr-1.5 inline-block h-2 w-2 rounded-full bg-sky-500" aria-label="Unread"></span>' : '' ?>
+                                <?= e($alert['title']) ?>
+                            </p>
+                            <?php if (!empty($alert['body'])): ?>
+                                <p class="mt-0.5 text-xs text-slate-600"><?= e($alert['body']) ?></p>
+                            <?php endif; ?>
+                            <p class="mt-1 text-xs text-slate-500"><?= e(date('d M Y, H:i', strtotime((string)$alert['created_at']))) ?></p>
                         </li>
                     <?php endforeach; ?>
                 </ul>

@@ -136,7 +136,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['receive_payment'])) {
             $paymentDateObject->format('Y-m-d'),
             $admin_id,
             $method,
-            $note
+            $note,
+            current_admin_id()
         );
 
         $successMessage = (($result['status'] ?? '') === 'paid')

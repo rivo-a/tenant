@@ -24,7 +24,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         // ✅ IMPORTANT: include role in SELECT
         $stmt = $pdo->prepare("
-            SELECT id, username, password, full_name, role
+            SELECT id, username, password, full_name, role, is_active
             FROM admins
             WHERE username = :username
             LIMIT 1
@@ -38,6 +38,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if (!password_verify($password, (string)$admin['password'])) {
             throw new RuntimeException('Invalid username or password.');
+        }
+
+        // A suspended account cannot even start a session.
+        if ((int)($admin['is_active'] ?? 0) !== 1) {
+            logAudit((int)$admin['id'], 'LOGIN_BLOCKED', 'Sign-in blocked: account is suspended.');
+            throw new RuntimeException('This account has been suspended. Contact the account owner.');
         }
 
         secure_login();

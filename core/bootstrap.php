@@ -82,6 +82,7 @@ header(
 require_once __DIR__ . '/../config/config.php';
 require_once __DIR__ . '/../config/database.php';   // NOW properly provides getDB()
 require_once __DIR__ . '/helpers.php';              // redirect(), e(), require_login(), etc.
+require_once __DIR__ . '/icons.php';                 // icon() — inlined Lucide SVG
 require_once __DIR__ . '/rent.php';                 // rent + payment expressions, rent propagation
 require_once __DIR__ . '/room_type_colors.php';     // room type colour keys
 require_once __DIR__ . '/audit.php';                // audit_logs writer, redaction, business context
