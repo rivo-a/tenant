@@ -26,6 +26,18 @@ require_once __DIR__ . '/error_handler.php';
 
 /*
 |--------------------------------------------------------------------------
+| Canonical HTTPS
+|--------------------------------------------------------------------------
+| Load the configuration first so APP_BASE_URL is available, then bounce
+| insecure requests before any page output. No-ops while APP_BASE_URL is http.
+*/
+require_once __DIR__ . '/../config/config.php';
+require_once __DIR__ . '/https.php';
+require_https();
+send_hsts_header();
+
+/*
+|--------------------------------------------------------------------------
 | Secure Session Configuration
 |--------------------------------------------------------------------------
 */
@@ -37,7 +49,9 @@ if (session_status() !== PHP_SESSION_ACTIVE) {
     session_set_cookie_params([
         'lifetime' => 0,
         'path'     => '/',
-        'secure'   => $isHttps,
+        // Secure whenever the request is HTTPS or the app is configured for it,
+        // so a misdetected proxy cannot downgrade the session cookie.
+        'secure'   => $isHttps || str_starts_with(app_base_url(), 'https://'),
         'httponly' => true,
         'samesite' => 'Strict',
     ]);
@@ -66,13 +80,18 @@ if (!function_exists('csp_nonce')) {
 // Enforce CSP with the generated nonce
 // Inline <script> blocks and event handlers must carry csp_nonce() to run.
 // Google Fonts is allowed for style and font sources only.
-header(
-    "Content-Security-Policy: default-src 'self'; "
+$policy = "default-src 'self'; "
     . "script-src 'self' 'nonce-" . csp_nonce() . "'; "
     . "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
     . "font-src 'self' https://fonts.gstatic.com data:; "
-    . "img-src 'self' data:;"
-);
+    . "img-src 'self' data:;";
+
+// Any stray http:// asset is upgraded instead of being blocked outright.
+if (is_https_request()) {
+    $policy .= " upgrade-insecure-requests;";
+}
+
+header('Content-Security-Policy: ' . $policy);
 
 /*
 |--------------------------------------------------------------------------

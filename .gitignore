@@ -1,0 +1,63 @@
+# ---------------------------------------------------------------------------
+# Secrets and environment
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+
+# ---------------------------------------------------------------------------
+# Databases, dumps and query-builder files
+# ---------------------------------------------------------------------------
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+database/*.db
+database/*.db-journal
+database/*.sqbpro
+
+# ---------------------------------------------------------------------------
+# Runtime storage: logs, uploads, backups
+# ---------------------------------------------------------------------------
+# The log directory itself is tracked (via .gitkeep) so a fresh clone or a
+# deploy always has somewhere to write. Only its contents are ignored: when the
+# directory went missing the logger fataled and every notice surfaced to the
+# user as a blank 500 page.
+!storage/logs/
+storage/logs/*
+!storage/logs/.gitkeep
+storage/maintenance_attachments/
+storage/maintenance/
+storage/backups/
+/tmp/
+
+# ---------------------------------------------------------------------------
+# Diagnostics and scratch files (never commit these)
+# ---------------------------------------------------------------------------
+write_test.php
+*_test.php
+
+# ---------------------------------------------------------------------------
+# Android build outputs and signing material
+# ---------------------------------------------------------------------------
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/keystore.properties
+*.jks
+*.keystore
+*.aab
+debug*.php
+diagnose*.php
+*.log
+
+# ---------------------------------------------------------------------------
+# Tooling caches
+# ---------------------------------------------------------------------------
+.kombai/tmp/
+.phpunit.result.cache
+node_modules/
+
+# Odd duplicate env file created by accident
+*HEAD~1*.env

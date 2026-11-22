@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Debug only. Same resource name as the release config, so the debug source set
+  replaces it during resource merging — no manifest duplication.
+  Allows the Android emulator (10.0.2.2) and a LAN host over plain HTTP, and
+  trusts user-installed certificates so an mkcert CA works on the device.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">10.0.2.2</domain>
+        <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="true">127.0.0.1</domain>
+        <domain includeSubdomains="true">192.168.1.17</domain>
+    </domain-config>
+</network-security-config>

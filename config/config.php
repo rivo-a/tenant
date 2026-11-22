@@ -1,6 +1,5 @@
 <?php
 declare(strict_types=1);
-define('BASE_URL', '/tenant-system/public');
 date_default_timezone_set('Africa/Kampala');
 
 if (!function_exists('app_env')) {
@@ -15,6 +14,14 @@ if (!function_exists('app_env')) {
         return trim($value);
     }
 }
+
+/*
+ * BASE_URL stays a path: every page links against it, so changing it to a full
+ * URL would rewrite every href. The public address (scheme + host + this path)
+ * lives in APP_URL and is what canonical HTTPS redirects use.
+ */
+define('BASE_URL', '/tenant-system/public');
+define('APP_URL', rtrim(app_env('APP_BASE_URL', ''), '/'));
 
 /*
 |--------------------------------------------------------------------------

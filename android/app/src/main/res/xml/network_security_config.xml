@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Release policy: HTTPS only, system trust anchors only.
+  The debug variant overrides this file with one that permits cleartext to a
+  local development host and trusts a user-installed CA (mkcert).
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

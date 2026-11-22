@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Urbahan</string>
+    <string name="offline_title">Can\'t reach the server</string>
+    <string name="offline_body">Check your connection and try again.</string>
+    <string name="retry">Retry</string>
+    <string name="download_failed">The file could not be downloaded.</string>
+    <string name="download_started">Download started. Check your notifications.</string>
+</resources>
