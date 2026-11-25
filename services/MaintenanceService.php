@@ -339,6 +339,15 @@ final class MaintenanceService
     {
         $request = $this->requireRequest($adminId, $requestId);
 
+        /*
+         * Handing a closed issue to someone is meaningless: the row would keep
+         * its completed/rejected state, and the assignee could then reopen it
+         * from their queue. Reopen first (status form) if the work really resumes.
+         */
+        if (in_array((string)$request['status'], ['completed', 'rejected', 'resolved'], true)) {
+            throw new RuntimeException('That issue is already closed. Reopen it before assigning it.');
+        }
+
         $staff = null;
         foreach ($this->assignableStaff($adminId) as $candidate) {
             if ((int)$candidate['id'] === $staffId) {
