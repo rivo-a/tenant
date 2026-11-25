@@ -66,6 +66,10 @@ $phoneHref = static function (string $phone): string {
        class="inline-flex min-h-11 shrink-0 items-center rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900">
       Logout
     </a>
+    <a href="my_tasks.php"
+       class="inline-flex min-h-11 shrink-0 items-center rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900">
+      myTasks
+    </a>
   </div>
 </header>
 

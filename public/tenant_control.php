@@ -276,7 +276,7 @@ require __DIR__ . '/partials/navbar.php';
             <div
                 class="pointer-events-none absolute -bottom-20 left-1/3 h-48 w-48 rounded-full bg-indigo-500/10 blur-3xl"
             ></div>
-
+                   
             <div class="relative flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
 
                 <div>
