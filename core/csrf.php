@@ -11,6 +11,20 @@ if (!function_exists('csrf_token')) {
     }
 }
 
+if (!function_exists('csrf_field')) {
+    /**
+     * Hidden input for any form that is verified with verify_csrf().
+     * Added because the onboarding, signup and task pages call it while only
+     * csrf_token() existed, which fataled the moment those forms rendered.
+     */
+    function csrf_field(): string
+    {
+        return '<input type="hidden" name="csrf" value="'
+            . htmlspecialchars(csrf_token(), ENT_QUOTES, 'UTF-8')
+            . '">';
+    }
+}
+
 if (!function_exists('verify_csrf')) {
     function verify_csrf(string $token): void
     {
