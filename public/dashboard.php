@@ -234,7 +234,7 @@ $active = 'dashboard';
           <span aria-hidden="true" class="text-slate-300">•</span>
           <span><?= e($monthLabel) ?></span>
         </div>
-        <h1 class="mt-2 font-sans text-2xl font-bold tracking-tight text-slate-950 sm:text-3xl">
+        <h1 class="mt-2 font-sans text-2xl font-bold tracking-tight text-white sm:text-3xl">
           Welcome back, <?= e($_SESSION['admin_name'] ?? 'Admin') ?>
         </h1>
         <p class="mt-1 max-w-2xl text-sm text-slate-600">

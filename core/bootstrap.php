@@ -120,6 +120,32 @@ auth_enforce_session();
 
 /*
 |--------------------------------------------------------------------------
+| First-run setup gate
+|--------------------------------------------------------------------------
+| A landlord with no property has nothing to attach rooms, tenants or rent to,
+| so the app opens on onboarding until the first property exists. Staff and
+| super admins are unaffected, and the setup pages themselves are exempt.
+*/
+if (PHP_SAPI !== 'cli' && !empty($_SESSION['admin_id']) && auth_role() === 'landlord') {
+    $currentScript = basename((string)($_SERVER['SCRIPT_NAME'] ?? ''));
+    $setupExempt = ['onboarding.php', 'logout.php', 'login.php', 'register.php', 'landing.php'];
+
+    if (!in_array($currentScript, $setupExempt, true)) {
+        try {
+            $setupCheck = getDB()->prepare('SELECT 1 FROM properties WHERE admin_id = :a LIMIT 1');
+            $setupCheck->execute([':a' => current_business_id()]);
+
+            if (!$setupCheck->fetchColumn()) {
+                redirect('onboarding.php');
+            }
+        } catch (Throwable $ignored) {
+            // A failed check must never lock someone out of their own account.
+        }
+    }
+}
+
+/*
+|--------------------------------------------------------------------------
 | Utility helpers that belong to bootstrap (small + harmless)
 |--------------------------------------------------------------------------
 */

@@ -3,12 +3,17 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../core/bootstrap.php';
 
-$action = $_GET['action'] ?? 'dashboard';
+// Guests see the landing page; a signed-in session still opens the dashboard.
+$action = $_GET['action'] ?? (empty($_SESSION['admin_id']) ? 'landing' : 'dashboard');
 
 switch ($action) {
 
     case 'login':
         require_once __DIR__ . '/login.php';
+        break;
+
+    case 'landing':
+        require_once __DIR__ . '/landing.php';
         break;
 
     case 'dashboard':

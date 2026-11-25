@@ -47,7 +47,7 @@ $homeHref = auth_home_for_role();
       <span class="min-w-0 leading-tight">
         <span class="block truncate font-extrabold text-slate-900">Urbahan</span>
         <span class="block truncate text-xs text-slate-500">
-          Logged in as <?= e($_SESSION['admin']['name'] ?? ($_SESSION['admin_name'] ?? 'Admin')) ?>
+          <span class="font-semibold text-slate-900"><?= e($_SESSION['admin']['name'] ?? ($_SESSION['admin_name'] ?? 'Admin')) ?></span>
           <span class="ml-1 hidden items-center rounded-full border border-slate-200 px-2 py-0.5 text-[11px] font-semibold text-slate-600 sm:inline-flex">
             <?= e(auth_role_label(auth_role())) ?>
           </span>
@@ -70,6 +70,7 @@ $homeHref = auth_home_for_role();
     <nav class="hidden min-w-0 flex-1 items-center justify-end gap-2 lg:flex" aria-label="Primary navigation">
       <?php if ($isCollector): ?>
         <?php nav_link('caretaker_overdue.php', 'Overdue tenants', 'caretaker', 'caretaker', 'circle-alert'); ?>
+        <?php nav_link('my_tasks.php', 'My tasks', 'my_tasks', $active, 'clipboard-list'); ?>
       <?php else: ?>
         <?php if (can('payments.record')): ?>
           <?php nav_link('payments.php', 'Payments', 'payments', $active, 'wallet'); ?>
@@ -82,6 +83,9 @@ $homeHref = auth_home_for_role();
         <?php endif; ?>
         <?php if (can('rooms.manage')): ?>
           <?php nav_link('rooms.php', 'Rooms', 'rooms', $active, 'house'); ?>
+        <?php endif; ?>
+        <?php if (auth_role() === 'property_manager'): ?>
+          <?php nav_link('my_tasks.php', 'My tasks', 'my_tasks', $active, 'clipboard-list'); ?>
         <?php endif; ?>
 
         <details id="desktopMore" class="relative shrink-0">

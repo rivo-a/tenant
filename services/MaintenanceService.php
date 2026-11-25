@@ -326,6 +326,7 @@ final class MaintenanceService
             SELECT id, full_name, role
             FROM admins
             WHERE is_active = 1
+              AND role IN ('property_manager', 'rent_collector')
               AND (id = :b1 OR landlord_id = :b2)
             ORDER BY full_name
         ");
